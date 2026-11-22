@@ -75,7 +75,7 @@ details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
   <section>
     <h2>库存 <small id="itemsMeta"></small></h2>
     <div class="tools">
-      <input id="q" type="search" placeholder="搜索名称或注册名（空格分隔多个关键词）">
+      <input id="q" type="search" placeholder="搜索中文名、英文名或注册名（空格分隔多个关键词）">
       <select id="kind">
         <option value="all">全部</option><option value="i">物品</option>
         <option value="f">流体</option><option value="c">可合成</option>
@@ -135,7 +135,7 @@ function renderPower(p) {
     </div>`;
 }
 
-const itemText = it => `${esc(it.l)} × ${num(it.s)}`;
+const itemText = it => `<span title="${esc(it.l)}">${esc(it.z || it.l)}</span> × ${num(it.s)}`;
 const itemList = (title, list, more) => list && list.length ? `<details><summary>${title}（${list.length}${more ? "+" : ""}）</summary>
   <ul>${list.map(it => `<li>${itemText(it)}</li>`).join("")}</ul></details>` : "";
 
@@ -170,13 +170,18 @@ async function refreshState() {
     renderPower(s.status.power);
     renderCpus(s.status.cpus);
   }
+  const t = s.i18n || {};
+  const i18nText = t.error ? `汉化文件读取失败：${t.error}`
+    : t.zh ? `汉化 ${full.format(t.zh)} 条${t.pairs ? `（含中英对照 ${full.format(t.pairs)} 条）` : "（未加载英文导出，流体不会汉化）"}`
+    : "未加载汉化";
   const m = s.items_meta;
   if (m) {
     const age = s.now - m.updated;
     pill($("itemsPill"), `库存 ${ago(age)}`, age < 300 ? "ok" : age < 1800 ? "warn" : "err");
-    $("itemsMeta").textContent =
-      `物品 ${full.format(m.items)} 种 · 流体 ${full.format(m.fluids)} 种 · 扫描耗时 ${m.scan_seconds.toFixed(1)} 秒`;
-    if (m.updated !== lastItemsUpdate) { lastItemsUpdate = m.updated; loadItems(); }
+    $("itemsMeta").textContent = `物品 ${full.format(m.items)} 种 · 流体 ${full.format(m.fluids)} 种`
+      + ` · 扫描耗时 ${m.scan_seconds.toFixed(1)} 秒 · ${i18nText}`;
+    const stamp = `${m.updated}/${t.version}`;
+    if (stamp !== lastItemsUpdate) { lastItemsUpdate = stamp; loadItems(); }
   }
 }
 
@@ -187,8 +192,8 @@ async function loadItems() {
   try { data = await api("api/items?" + qs); } catch { return; }
   total = data.total;
   $("rows").innerHTML = data.rows.map(r => `<tr>
-    <td><span class="label">${esc(r.l)}</span>${r.k === "f" ? '<span class="tag">流体</span>' : ""}${r.c ? '<span class="tag">可合成</span>' : ""}
-      <span class="reg">${esc(r.n)}${r.k === "i" ? ":" + r.d : ""}</span></td>
+    <td><span class="label">${esc(r.z || r.l)}</span>${r.k === "f" ? '<span class="tag">流体</span>' : ""}${r.c ? '<span class="tag">可合成</span>' : ""}
+      <span class="reg">${r.z ? esc(r.l) + " · " : ""}${esc(r.n)}${r.k === "i" ? ":" + r.d : ""}</span></td>
     <td title="${full.format(r.s)}">${num(r.s)}${r.k === "f" ? " L" : ""}</td></tr>`).join("");
   $("itemsEmpty").hidden = data.rows.length > 0;
   const pages = Math.max(1, Math.ceil(total / PAGE));

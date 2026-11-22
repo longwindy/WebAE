@@ -5,13 +5,18 @@ The OpenComputers program pushes two kinds of data:
   * POST /api/oc/items   inventory snapshot as tab-separated text, sent in
                          numbered chunks and swapped in once the last chunk arrives
 The browser reads it back through /api/state and /api/items after logging in.
+
+Item names arrive in the server's language (English). Chinese names come from
+NEI item panel dumps placed in <data_dir>/i18n (see Translations).
 """
 
 import asyncio
+import csv
 import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import time
 import tomllib
@@ -49,6 +54,146 @@ SESSION_VALUE = hmac.new(
     CFG["web_password"].encode(), b"aeweb-session-v1", hashlib.sha256
 ).hexdigest()
 STATE_FILE = CFG["data_dir"] / "state.json"
+I18N_DIR = CFG["data_dir"] / "i18n"
+
+
+class Translations:
+    """Chinese item names from NEI item panel dumps (CSV mode).
+
+    itempanel_zh.csv (dumped with the client in Chinese) maps "registry:meta" to
+    a Chinese name. The optional itempanel_en.csv, dumped with the client in
+    English, pairs up with it row by row to give an English-name -> Chinese-name
+    table; that is how fluids (shown in NEI as GT fluid display items) and items
+    whose meta is shared by several NBT variants get translated.
+
+    Items NEI hides or lists only once get two fallbacks: an item registered
+    under a single meta (tools, whose meta is damage) uses that one name, and
+    GT ore-processing products (hidden in GTNH's NEI) are named from their
+    material using the patterns GT++/BartWorks items show in the same dumps.
+    """
+
+    ZH_FILE = "itempanel_zh.csv"
+    EN_FILE = "itempanel_en.csv"
+    # (English pattern, Chinese template, use the bare material name)
+    DERIVED = [
+        (re.compile(r"Tiny Pile of (.+)"), "小撮{}", False),
+        (re.compile(r"Small Pile of (.+)"), "小堆{}", False),
+        (re.compile(r"Impure Pile of (.+)"), "含杂{}", False),
+        (re.compile(r"Purified Pile of (.+)"), "纯净{}", False),
+        (re.compile(r"Purified Crushed (.+) Ore"), "洗净的{}矿石", True),
+        (re.compile(r"Centrifuged Crushed (.+) Ore"), "离心{}矿石", True),
+        (re.compile(r"Crushed (.+) Ore"), "粉碎的{}矿石", True),
+    ]
+
+    def __init__(self) -> None:
+        self.by_key: dict[str, str] = {}     # unambiguous registry:meta -> zh
+        self.any_key: dict[str, str] = {}    # first zh seen for registry:meta
+        self.single: dict[str, str] = {}     # registry name with one meta -> zh
+        self.by_en: dict[str, str] = {}      # unambiguous English name -> zh
+        self.stamp: tuple | None = None
+        self.version = 0
+        self.info = {"zh": 0, "en": 0, "pairs": 0, "error": None}
+
+    @staticmethod
+    def _read(path: Path) -> dict[str, list[str]]:
+        """Return registry:meta -> display names in dump order (None if absent)."""
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")
+        groups: dict[str, list[str]] = {}
+        reader = csv.DictReader(text.splitlines())
+        missing = {"Item Name", "Item meta", "Display Name"} - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path.name}: missing columns {sorted(missing)}")
+        for row in reader:
+            name = (row["Item Name"] or "").strip()
+            display = (row["Display Name"] or "").strip()
+            if name and display:
+                groups.setdefault(f"{name}:{row['Item meta'].strip()}", []).append(display)
+        return groups
+
+    def refresh(self) -> None:
+        zh_path, en_path = I18N_DIR / self.ZH_FILE, I18N_DIR / self.EN_FILE
+        stamp = tuple(p.stat().st_mtime if p.exists() else None for p in (zh_path, en_path))
+        if stamp == self.stamp:
+            return
+        self.stamp = stamp
+        by_key, any_key, by_en = {}, {}, {}
+        info = {"zh": 0, "en": 0, "pairs": 0, "error": None}
+        try:
+            zh = self._read(zh_path) if zh_path.exists() else {}
+            en = self._read(en_path) if en_path.exists() else {}
+        except (OSError, ValueError) as exc:
+            info["error"] = str(exc)
+            zh, en = {}, {}
+        metas_per_name: dict[str, list[str]] = {}
+        for key, names in zh.items():
+            info["zh"] += len(names)
+            any_key[key] = names[0]
+            if len(set(names)) == 1:
+                by_key[key] = names[0]
+            metas_per_name.setdefault(key.rsplit(":", 1)[0], []).append(key)
+        single = {name: by_key[keys[0]] for name, keys in metas_per_name.items()
+                  if len(keys) == 1 and keys[0] in by_key}
+        ambiguous = set()
+        for key, en_names in en.items():
+            info["en"] += len(en_names)
+            zh_names = zh.get(key)
+            if not zh_names or len(zh_names) != len(en_names):
+                continue
+            for en_name, zh_name in zip(en_names, zh_names):
+                if en_name == zh_name or en_name in ambiguous:
+                    continue
+                if by_en.setdefault(en_name, zh_name) != zh_name:
+                    ambiguous.add(en_name)
+        for en_name in ambiguous:
+            del by_en[en_name]
+        info["pairs"] = len(by_en)
+        self.by_key, self.any_key, self.single, self.by_en = by_key, any_key, single, by_en
+        self.info = info
+        self.version += 1
+        print(f"Translations loaded: {info}")
+
+    def lookup(self, kind: str, name: str, damage: int, label: str) -> str | None:
+        key = f"{name}:{damage}"
+        if kind == "i" and key in self.by_key:
+            return self.by_key[key]
+        if label in self.by_en:
+            return self.by_en[label]
+        if kind != "i":
+            return None
+        if key in self.any_key:
+            return self.any_key[key]
+        if name in self.single:
+            return self.single[name]
+        return self.derive(label)
+
+    def derive(self, label: str) -> str | None:
+        for pattern, template, bare in self.DERIVED:
+            match = pattern.fullmatch(label)
+            if not match:
+                continue
+            base = match.group(1)
+            if bare:  # "Gold" -> "金" via "Gold Dust" -> "金粉"
+                dust = self.by_en.get(base + " Dust")
+                zh = dust[:-1] if dust and dust.endswith("粉") else self.by_en.get(base)
+            else:
+                zh = self.by_en.get(base)
+            return template.format(zh) if zh else None
+        return None
+
+
+TR = Translations()
+
+
+def index_rows(rows: list[dict]) -> None:
+    """Attach the Chinese name and the lower-cased search text to each row."""
+    for row in rows:
+        zh = TR.lookup(row["k"], row["n"], row["d"], row["l"])
+        row["_zh"] = zh
+        row["_key"] = "\0".join((row["n"], row["l"], zh or "")).lower()
 
 
 class State:
@@ -57,6 +202,13 @@ class State:
         self.items: list[dict] = []
         self.items_meta: dict | None = None
         self.pending: dict | None = None
+        self.indexed_version = -1
+
+    def ensure_indexed(self) -> None:
+        TR.refresh()
+        if self.indexed_version != TR.version:
+            index_rows(self.items)
+            self.indexed_version = TR.version
 
     def load(self) -> None:
         if not STATE_FILE.exists():
@@ -69,12 +221,10 @@ class State:
         self.status = data.get("status")
         self.items = data.get("items", [])
         self.items_meta = data.get("items_meta")
-        for row in self.items:
-            row["_key"] = (row["n"] + "\0" + row["l"]).lower()
 
     def save(self) -> None:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        items = [{k: v for k, v in row.items() if k != "_key"} for row in self.items]
+        items = [{k: v for k, v in row.items() if not k.startswith("_")} for row in self.items]
         payload = {"status": self.status, "items": items, "items_meta": self.items_meta}
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -150,7 +300,6 @@ def parse_rows(text: str) -> list[dict]:
             }
         except ValueError:
             raise HTTPException(400, f"bad number: {line[:80]!r}")
-        row["_key"] = (row["n"] + "\0" + row["l"]).lower()
         rows.append(row)
     return rows
 
@@ -188,6 +337,7 @@ async def oc_items(request: Request, snap: str, seq: int, final: int = 0,
             return JSONResponse({"ok": False, "error": "count_mismatch",
                                  "got": len(rows)}, status_code=409)
         STATE.items = rows
+        STATE.indexed_version = -1
         STATE.items_meta = {
             "updated": now,
             "items": sum(1 for r in rows if r["k"] == "i"),
@@ -246,16 +396,39 @@ async def index(request: Request):
                         headers={"Cache-Control": "no-store"})
 
 
+def translated_status(status: dict | None) -> dict | None:
+    """Copy of the status with a Chinese name "z" added to every CPU item."""
+    if not status:
+        return status
+
+    def tr(item):
+        if not isinstance(item, dict):
+            return item
+        return {**item, "z": TR.lookup("i", item.get("n", ""), item.get("d", 0), item.get("l", ""))}
+
+    cpus = []
+    for cpu in status.get("cpus") or []:
+        cpu = dict(cpu)
+        cpu["final"] = tr(cpu.get("final"))
+        cpu["active"] = [tr(i) for i in cpu.get("active") or []]
+        cpu["pending"] = [tr(i) for i in cpu.get("pending") or []]
+        cpus.append(cpu)
+    return {**status, "cpus": cpus}
+
+
 @app.get("/api/state")
 async def api_state(request: Request):
     require_web(request)
-    return {"now": time.time(), "status": STATE.status, "items_meta": STATE.items_meta}
+    STATE.ensure_indexed()
+    return {"now": time.time(), "status": translated_status(STATE.status),
+            "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version}}
 
 
 @app.get("/api/items")
 async def api_items(request: Request, q: str = "", kind: str = "all", sort: str = "size",
                     order: str = "desc", offset: int = 0, limit: int = 100):
     require_web(request)
+    STATE.ensure_indexed()
     rows = STATE.items
     if kind in ("i", "f"):
         rows = [r for r in rows if r["k"] == kind]
@@ -265,12 +438,13 @@ async def api_items(request: Request, q: str = "", kind: str = "all", sort: str 
     if terms:
         rows = [r for r in rows if all(t in r["_key"] for t in terms)]
     if sort == "name":
-        rows = sorted(rows, key=lambda r: r["l"].lower(), reverse=(order == "desc"))
+        rows = sorted(rows, key=lambda r: (r["_zh"] or r["l"]).lower(), reverse=(order == "desc"))
     else:
         rows = sorted(rows, key=lambda r: r["s"], reverse=(order != "asc"))
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
-    page = [{k: v for k, v in r.items() if k != "_key"} for r in rows[offset:offset + limit]]
+    page = [{**{k: v for k, v in r.items() if not k.startswith("_")}, "z": r["_zh"]}
+            for r in rows[offset:offset + limit]]
     return {"total": len(rows), "rows": page}
 
 
