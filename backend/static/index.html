@@ -54,6 +54,31 @@ details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
 .tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--soft);color:var(--muted);margin-left:6px}
 .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;color:var(--muted)}
 .empty{color:var(--muted);padding:12px 0}
+tr.craftable{cursor:pointer}
+tr.craftable:hover td{background:var(--soft)}
+.tag.can{color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--err)}
+button.small{padding:1px 8px;font-size:12px}
+.cpu .actions{margin-top:8px;text-align:right}
+.orders{display:grid;gap:0}
+.order{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:8px 0;border-top:1px solid var(--line)}
+.order:first-child{border-top:0}
+.order .what{overflow-wrap:anywhere}
+.order .meta{color:var(--muted);font-size:12px;grid-column:1}
+.order .right{grid-row:1 / span 2;grid-column:2;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg);
+  padding:20px;width:min(420px,calc(100vw - 32px))}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog h3{margin:0 0 4px;font-size:16px}
+dialog .reg{margin-bottom:12px}
+dialog label{display:block;margin:12px 0 4px;color:var(--muted);font-size:13px}
+dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--card)}
+.steps{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.steps button{flex:1;padding:4px 0;font-size:13px}
+.note{color:var(--muted);font-size:12px;margin:12px 0 0}
+.err-text{color:var(--err);font-size:13px;margin:10px 0 0}
+.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 </style>
 </head>
 <body>
@@ -71,6 +96,10 @@ details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
   <section>
     <h2>合成 CPU <small id="cpuSummary"></small></h2>
     <div id="cpus" class="cpus"></div>
+  </section>
+  <section>
+    <h2>订单 <small>点库存里标着"可合成"的物品下单</small></h2>
+    <div id="orders" class="orders"><div class="empty">还没有订单</div></div>
   </section>
   <section>
     <h2>库存 <small id="itemsMeta"></small></h2>
@@ -93,12 +122,36 @@ details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
     </div>
   </section>
 </main>
+<dialog id="orderDialog">
+  <form id="orderForm" method="dialog">
+    <h3 id="odName"></h3>
+    <span class="reg" id="odReg"></span>
+    <div class="meta">当前库存：<span id="odStock"></span></div>
+    <label for="odAmount">数量</label>
+    <input id="odAmount" type="number" min="1" step="1" value="1" required>
+    <div class="steps">
+      <button type="button" data-step="-1000">-1000</button><button type="button" data-step="-100">-100</button>
+      <button type="button" data-step="-10">-10</button><button type="button" data-step="-1">-1</button>
+      <button type="button" data-step="1">+1</button><button type="button" data-step="10">+10</button>
+      <button type="button" data-step="100">+100</button><button type="button" data-step="1000">+1000</button>
+    </div>
+    <label for="odCpu">合成 CPU</label>
+    <select id="odCpu"></select>
+    <p class="note" id="odCpuHint" hidden>只能指定有名字的 CPU：在铁砧里给一个合成存储器或合成单元改名，再放进 CPU 结构里。</p>
+    <p class="err-text" id="odError" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" id="odCancel">取消</button>
+      <button type="submit" class="primary" id="odSubmit">开始合成</button>
+    </div>
+  </form>
+</dialog>
 <script>
 const PAGE = 100;
 const $ = id => document.getElementById(id);
 const compact = new Intl.NumberFormat("zh-CN", {notation: "compact", maximumFractionDigits: 2});
 const full = new Intl.NumberFormat("zh-CN");
 let offset = 0, total = 0, lastItemsUpdate = null, itemsTimer = null;
+let lastState = null, currentRows = [], orderItem = null;
 
 const esc = s => String(s ?? "").replace(/§./g, "").replace(/[&<>"]/g,
   c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
@@ -117,6 +170,18 @@ async function api(path) {
   if (res.status === 401) { location.href = "login"; throw new Error("login"); }
   if (!res.ok) throw new Error(res.status);
   return res.json();
+}
+
+async function postJson(path, body) {
+  const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  if (res.status === 401) { location.href = "login"; throw new Error("请重新登录"); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const d = data.detail;
+    throw new Error(typeof d === "string" ? d : Array.isArray(d) ? d.map(x => x.msg).join("；") : `HTTP ${res.status}`);
+  }
+  return data;
 }
 
 function pill(el, text, cls) { el.textContent = text; el.className = "pill " + cls; }
@@ -154,6 +219,8 @@ function renderCpus(cpus) {
         : /No crafting monitor/.test(c.finalError || "") ? '<span class="meta">未知（CPU 里没有合成监控器）</span>'
         : '<span class="meta">未知</span>'}</div>` : ""}
       ${itemList("正在合成", c.active, c.truncated)}${itemList("等待中", c.pending, c.truncated)}
+      ${c.busy && c.index ? `<div class="actions"><button class="small danger" data-cancel-cpu="${c.index}"
+        data-cpu-name="${esc(c.rawName || "")}" data-cpu-label="${esc(c.name)}">取消任务</button></div>` : ""}
     </div>`).join("") : `<div class="empty">没有合成 CPU</div>`;
   document.querySelectorAll("#cpus details").forEach((d, i) => {
     d.dataset.key = i; if (open.has(String(i))) d.open = true;
@@ -164,6 +231,8 @@ async function refreshState() {
   let s;
   try { s = await api("api/state"); }
   catch (e) { if (e.message !== "login") pill($("statusPill"), "后端无响应", "err"); return; }
+  lastState = s;
+  renderOrders(s.orders, s.now);
   if (s.status) {
     const age = s.now - s.status.received;
     pill($("statusPill"), `状态 ${ago(age)}`, age < 30 ? "ok" : age < 120 ? "warn" : "err");
@@ -191,8 +260,9 @@ async function loadItems() {
   let data;
   try { data = await api("api/items?" + qs); } catch { return; }
   total = data.total;
-  $("rows").innerHTML = data.rows.map(r => `<tr>
-    <td><span class="label">${esc(r.z || r.l)}</span>${r.k === "f" ? '<span class="tag">流体</span>' : ""}${r.c ? '<span class="tag">可合成</span>' : ""}
+  currentRows = data.rows;
+  $("rows").innerHTML = data.rows.map((r, i) => `<tr data-i="${i}"${r.c && r.k === "i" ? ' class="craftable" title="点击下单合成"' : ""}>
+    <td><span class="label">${esc(r.z || r.l)}</span>${r.k === "f" ? '<span class="tag">流体</span>' : ""}${r.c ? '<span class="tag can">可合成</span>' : ""}
       <span class="reg">${r.z ? esc(r.l) + " · " : ""}${esc(r.n)}${r.k === "i" ? ":" + r.d : ""}</span></td>
     <td title="${full.format(r.s)}">${num(r.s)}${r.k === "f" ? " L" : ""}</td></tr>`).join("");
   $("itemsEmpty").hidden = data.rows.length > 0;
@@ -201,6 +271,109 @@ async function loadItems() {
   $("prev").disabled = offset === 0;
   $("next").disabled = offset + PAGE >= total;
 }
+
+// ------------------------------------------------------------ orders
+
+const ORDER_STATES = {
+  queued: ["排队中", ""], sent: ["已发送", ""], computing: ["计算中", "warn"], crafting: ["合成中", "ok"],
+  done: ["完成", "ok"], failed: ["失败", "err"], canceled: ["已取消", ""], expired: ["已过期", "err"],
+  lost: ["状态未知", "warn"], error: ["错误", "err"],
+};
+const REASONS = [
+  [/missing resources/i, "材料不足"],
+  [/no pattern/i, "找不到这个物品的样板"],
+  [/cpu changed/i, "CPU 状态已变化"],
+  [/no link|no controller|Error submitting/i, "AE 网络无法提交任务"],
+  [/withdrawn/i, "已撤回"],
+  [/stopped tracking/i, "OC 已不再跟踪这个任务（可能重启过），请在游戏里确认"],
+  [/already handled/i, "这条指令已经执行过"],
+];
+const reasonText = (o) => {
+  if (o.state === "expired") return "超过 5 分钟没被 OC 领取，已作废";
+  const hit = REASONS.find(([re]) => re.test(o.msg || ""));
+  return hit ? hit[1] : (o.msg || "");
+};
+
+function renderOrders(orders, now) {
+  if (!orders || !orders.length) return;
+  $("orders").innerHTML = orders.map(o => {
+    const [label, cls] = ORDER_STATES[o.state] || [o.state, ""];
+    const what = o.type === "craft"
+      ? `<span title="${esc(o.l)}">${esc(o.z || o.l)}</span> × ${full.format(o.amount)}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}`
+      : `取消 CPU 任务：${esc(o.l)}`;
+    const reason = reasonText(o);
+    return `<div class="order">
+      <div class="what">${what}</div>
+      <div class="meta">${ago(now - o.created)}下单${reason ? " · " + esc(reason) : ""}</div>
+      <div class="right"><span class="pill ${cls}">${label}</span>
+        ${o.state === "queued" ? `<button class="small" data-withdraw="${esc(o.id)}">撤回</button>` : ""}</div>
+    </div>`;
+  }).join("");
+}
+
+function openOrder(row) {
+  orderItem = row;
+  $("odName").textContent = (row.z || row.l).replace(/§./g, "");
+  $("odReg").textContent = `${row.z ? row.l.replace(/§./g, "") + " · " : ""}${row.n}:${row.d}`;
+  $("odStock").textContent = full.format(row.s);
+  $("odAmount").value = 1;
+  $("odAmount").max = lastState?.max_order || 1000000;
+  $("odError").hidden = true;
+  $("odSubmit").disabled = false;
+  // OC picks the CPU by name, so unnamed CPUs are listed but cannot be chosen.
+  const cpus = [...(lastState?.status?.cpus || [])]
+    .sort((a, b) => (!a.rawName - !b.rawName) || (a.busy - b.busy) || (a.index - b.index));
+  $("odCpu").innerHTML = `<option value="">自动选择</option>` + cpus.map(c => c.rawName
+    ? `<option value="${esc(c.rawName)}">${esc(c.name)}（${bytes(c.storage)}${c.busy ? "，忙碌" : ""}）</option>`
+    : `<option disabled>${esc(c.name)}（${bytes(c.storage)}，未命名，不能指定）</option>`).join("");
+  $("odCpuHint").hidden = cpus.some(c => c.rawName);
+  $("orderDialog").showModal();
+  $("odAmount").select();
+}
+
+document.querySelectorAll(".steps button").forEach(b => b.addEventListener("click", () => {
+  const v = (parseInt($("odAmount").value, 10) || 0) + parseInt(b.dataset.step, 10);
+  $("odAmount").value = Math.max(1, v);
+}));
+$("odCancel").addEventListener("click", () => $("orderDialog").close());
+$("orderForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const amount = parseInt($("odAmount").value, 10);
+  const max = lastState?.max_order || 1000000;
+  const showError = (msg) => { $("odError").textContent = msg; $("odError").hidden = false; };
+  if (!Number.isInteger(amount) || amount < 1) return showError("数量必须是正整数");
+  if (amount > max) return showError(`数量不能超过 ${full.format(max)}`);
+  const name = $("odName").textContent;
+  if (amount >= 10000 && !confirm(`确定要合成 ${full.format(amount)} 个「${name}」吗？`)) return;
+  $("odSubmit").disabled = true;
+  try {
+    await postJson("api/orders", {n: orderItem.n, d: orderItem.d, l: orderItem.l, amount, cpu: $("odCpu").value});
+    $("orderDialog").close();
+    refreshState();
+  } catch (e) {
+    showError(e.message);
+    $("odSubmit").disabled = false;
+  }
+});
+
+$("rows").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr.craftable");
+  if (tr) openOrder(currentRows[Number(tr.dataset.i)]);
+});
+$("cpus").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-cancel-cpu]");
+  if (!b || !confirm(`确定要取消「${b.dataset.cpuLabel}」上正在进行的合成任务吗？`)) return;
+  b.disabled = true;
+  try { await postJson("api/cpus/cancel", {index: Number(b.dataset.cancelCpu), name: b.dataset.cpuName}); refreshState(); }
+  catch (e) { alert(e.message); b.disabled = false; }
+});
+$("orders").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("[data-withdraw]");
+  if (!b) return;
+  b.disabled = true;
+  try { await postJson(`api/orders/${b.dataset.withdraw}/cancel`, {}); refreshState(); }
+  catch (e) { alert(e.message); b.disabled = false; }
+});
 
 function requery() { offset = 0; clearTimeout(itemsTimer); itemsTimer = setTimeout(loadItems, 250); }
 $("q").addEventListener("input", requery);

@@ -245,6 +245,8 @@ local function collectStatus()
   }
   for i, c in ipairs(me.getCpus()) do
     local entry = {
+      index = i,
+      rawName = c.name or "",
       name = (c.name and c.name ~= "") and c.name or ("CPU #" .. i),
       storage = c.storage or 0,
       coprocessors = c.coprocessors or 0,
@@ -267,11 +269,172 @@ local function collectStatus()
   return status
 end
 
-local function sendStatus()
-  local _, err = post("/api/oc/status", toJson(collectStatus()), "application/json")
-  if err then log("status upload failed: %s", err) end
-  return err == nil
+------------------------------------------------------------------ commands
+-- Commands arrive as tab-separated lines in the status response. Each id is
+-- written to HANDLED_PATH before it is acted on, so a command the backend
+-- re-sends (lost reply, reboot) never runs twice. Job progress goes back to
+-- the backend with the next status upload.
+
+local HANDLED_PATH = CONFIG_PATH:gsub("%.cfg$", "") .. ".handled" -- /home/aeweb.handled
+local HANDLED_KEEP = 200
+local handled, handledOrder = {}, {}
+local trackers = {}   -- { id, status, state } for crafting jobs being watched
+local updates = {}    -- reports not yet accepted by the backend
+
+local function loadHandled()
+  local file = io.open(HANDLED_PATH, "r")
+  if not file then return end
+  for line in file:lines() do
+    if line ~= "" and not handled[line] then
+      handled[line] = true
+      handledOrder[#handledOrder + 1] = line
+    end
+  end
+  file:close()
+  if #handledOrder > HANDLED_KEEP * 2 then -- compact the file now and then
+    local keep = {}
+    for i = #handledOrder - HANDLED_KEEP + 1, #handledOrder do keep[#keep + 1] = handledOrder[i] end
+    handled, handledOrder = {}, keep
+    for _, id in ipairs(keep) do handled[id] = true end
+    file = assert(io.open(HANDLED_PATH, "w"))
+    file:write(table.concat(keep, "\n"), "\n")
+    file:close()
+  end
 end
+
+local function markHandled(id)
+  handled[id] = true
+  handledOrder[#handledOrder + 1] = id
+  local file = assert(io.open(HANDLED_PATH, "a"))
+  file:write(id, "\n")
+  file:close()
+end
+
+local function report(id, state, msg)
+  updates[#updates + 1] = { id = id, state = state, msg = msg and tostring(msg) or "" }
+  log("order %s: %s %s", id, state, msg and tostring(msg) or "")
+end
+
+local function isTracked(id)
+  for _, t in ipairs(trackers) do
+    if t.id == id then return true end
+  end
+  return false
+end
+
+local function split(line)
+  local out, start = {}, 1
+  while true do
+    local i = line:find("\t", start, true)
+    if not i then
+      out[#out + 1] = line:sub(start)
+      return out
+    end
+    out[#out + 1] = line:sub(start, i - 1)
+    start = i + 1
+  end
+end
+
+-- Finds the pattern for name/damage, using the label to pick among NBT variants.
+local function findCraftable(name, damage, label)
+  local ok, list = pcall(me.getCraftables, { name = name, damage = damage })
+  if not ok or type(list) ~= "table" or #list == 0 then
+    ok, list = pcall(me.getCraftables, { label = label })
+  end
+  if not ok or type(list) ~= "table" or #list == 0 then return nil end
+  if #list == 1 then return list[1] end
+  for _, craftable in ipairs(list) do
+    local okStack, stack = pcall(craftable.getStack)
+    if okStack and type(stack) == "table" and stack.label == label then return craftable end
+  end
+  return list[1]
+end
+
+local function runCraft(id, amount, damage, name, cpu, label)
+  local craftable = findCraftable(name, damage, label)
+  if not craftable then return report(id, "failed", "no pattern") end
+  local ok, status = pcall(craftable.request, amount, false, cpu ~= "" and cpu or nil)
+  if not ok or not status then return report(id, "failed", tostring(status)) end
+  trackers[#trackers + 1] = { id = id, status = status, state = "computing" }
+  report(id, "computing")
+end
+
+local function runCancelCpu(id, index, name)
+  local ok, cpus = pcall(me.getCpus)
+  local entry = ok and cpus[index]
+  if not entry or (entry.name or "") ~= name then
+    return report(id, "failed", "cpu changed")
+  end
+  local okc, err = pcall(entry.cpu.cancel)
+  if okc then report(id, "done") else report(id, "failed", tostring(err)) end
+end
+
+local function runCommands(text)
+  for line in text:gmatch("[^\n]+") do
+    local f = split(line)
+    local kind, id = f[1], f[2]
+    if id and handled[id] then
+      if not isTracked(id) then report(id, "lost", "already handled") end
+    elseif kind == "craft" and #f >= 7 then
+      markHandled(id)
+      runCraft(id, tonumber(f[3]), tonumber(f[4]), f[5], f[6], f[7])
+    elseif kind == "cancel_cpu" and #f >= 4 then
+      markHandled(id)
+      runCancelCpu(id, tonumber(f[3]), f[4])
+    elseif id then
+      markHandled(id)
+      report(id, "error", "unknown command " .. tostring(kind))
+    end
+  end
+end
+
+-- isComputing/hasFailed/isCanceled/isDone each cost a tick, so ask only what is needed.
+local function pollTrackers()
+  for i = #trackers, 1, -1 do
+    local t, final = trackers[i], nil
+    local ok, computing = pcall(t.status.isComputing)
+    if not ok then
+      final = { "lost", tostring(computing) }
+    elseif not computing then
+      local failed, reason = t.status.hasFailed()
+      if failed then
+        final = { "failed", reason }
+      elseif t.status.isCanceled() then
+        final = { "canceled" }
+      elseif t.status.isDone() then
+        final = { "done" }
+      elseif t.state ~= "crafting" then
+        t.state = "crafting"
+        report(t.id, "crafting")
+      end
+    end
+    if final then
+      report(t.id, final[1], final[2])
+      table.remove(trackers, i)
+    end
+  end
+end
+
+local function sendStatus()
+  pcall(pollTrackers)
+  local status = collectStatus()
+  local sending = #updates
+  status.updates = emptyArray()
+  for i = 1, sending do status.updates[i] = updates[i] end
+  status.tracking = emptyArray()
+  for _, t in ipairs(trackers) do status.tracking[#status.tracking + 1] = t.id end
+
+  local reply, err = post("/api/oc/status", toJson(status), "application/json")
+  if err then
+    log("status upload failed: %s", err)
+    return false
+  end
+  for _ = 1, sending do table.remove(updates, 1) end -- delivered; keep newer ones
+  runCommands(reply)
+  return true
+end
+
+loadHandled()
 
 ------------------------------------------------------------------ inventory
 

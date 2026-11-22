@@ -17,6 +17,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import sys
 import time
 import tomllib
@@ -24,7 +25,9 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
+                               RedirectResponse)
+from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get("AEWEB_CONFIG", BASE_DIR / "config.toml"))
@@ -233,6 +236,104 @@ class State:
 
 STATE = State()
 STATE.load()
+
+
+class Commands:
+    """Orders queued from the web page and carried out by the OC program.
+
+    A command is handed to OC in the response to its status upload ("sent"),
+    re-sent if OC has not reported on it within RESEND_AFTER seconds, and
+    dropped ("expired") if OC never picked it up within EXPIRE_AFTER seconds so
+    an old order cannot fire long after it was placed. OC records each id
+    before acting on it, so a re-sent command never runs twice.
+    """
+
+    FILE = CFG["data_dir"] / "commands.json"
+    RESEND_AFTER = 30
+    EXPIRE_AFTER = 300
+    LOST_AFTER = 60
+    KEEP = 200
+    TERMINAL = {"done", "failed", "canceled", "expired", "lost", "error"}
+
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+        if self.FILE.exists():
+            try:
+                self.items = json.loads(self.FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                print(f"Ignoring unreadable {self.FILE}: {exc}")
+
+    def save(self) -> None:
+        self.items = self.items[-self.KEEP:]
+        self.FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.items, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self.FILE)
+
+    def get(self, cmd_id: str) -> dict | None:
+        return next((c for c in self.items if c["id"] == cmd_id), None)
+
+    def add(self, **fields) -> dict:
+        now = time.time()
+        cmd = {"id": secrets.token_hex(8), "state": "queued", "msg": "", "created": now,
+               "updated": now, "sent": None, **fields}
+        self.items.append(cmd)
+        self.save()
+        return cmd
+
+    def set_state(self, cmd: dict, state: str, msg: str = "") -> None:
+        cmd["state"], cmd["msg"], cmd["updated"] = state, msg, time.time()
+
+    def apply_report(self, updates: list, tracking: list) -> None:
+        """Apply state updates from OC and notice jobs OC is no longer tracking."""
+        now, changed = time.time(), False
+        for update in updates if isinstance(updates, list) else []:
+            if not isinstance(update, dict):
+                continue
+            cmd = self.get(str(update.get("id", "")))
+            state = str(update.get("state", ""))
+            if cmd and cmd["state"] not in self.TERMINAL and state:
+                self.set_state(cmd, state, str(update.get("msg", ""))[:200])
+                changed = True
+        tracked = {str(t) for t in tracking} if isinstance(tracking, list) else set()
+        for cmd in self.items:
+            if (cmd["state"] in ("computing", "crafting") and cmd["id"] not in tracked
+                    and now - cmd["updated"] > self.LOST_AFTER):
+                self.set_state(cmd, "lost", "OC stopped tracking this job")
+                changed = True
+        if changed:
+            self.save()
+
+    def to_deliver(self) -> list[dict]:
+        now, out, changed = time.time(), [], False
+        for cmd in self.items:
+            if cmd["state"] == "queued" and now - cmd["created"] > self.EXPIRE_AFTER:
+                self.set_state(cmd, "expired")
+                changed = True
+            elif cmd["state"] == "queued" or (
+                    cmd["state"] == "sent" and now - cmd["sent"] > self.RESEND_AFTER):
+                if cmd["state"] == "queued":
+                    self.set_state(cmd, "sent")
+                cmd["sent"] = now
+                out.append(cmd)
+                changed = True
+        if changed:
+            self.save()
+        return out
+
+    @staticmethod
+    def wire(cmd: dict) -> str:
+        """One tab-separated line for OC; the label goes last as it may hold anything."""
+        clean = lambda s: re.sub(r"[\t\r\n]", " ", str(s))
+        if cmd["type"] == "craft":
+            fields = ["craft", cmd["id"], cmd["amount"], cmd["d"], cmd["n"], cmd["cpu"], cmd["l"]]
+        else:
+            fields = ["cancel_cpu", cmd["id"], cmd["index"], cmd["cpu"]]
+        return "\t".join(clean(f) for f in fields)
+
+
+COMMANDS = Commands()
+MAX_ORDER_AMOUNT = int(CFG.get("max_order_amount", 1_000_000))
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -275,9 +376,12 @@ async def oc_status(request: Request):
         raise HTTPException(400, "invalid json")
     if not isinstance(data, dict):
         raise HTTPException(400, "expected object")
+    COMMANDS.apply_report(data.pop("updates", []), data.pop("tracking", []))
     data["received"] = time.time()
     STATE.status = data
-    return {"ok": True}
+    # Pending commands ride back on the response, one per line.
+    lines = [Commands.wire(c) for c in COMMANDS.to_deliver()]
+    return PlainTextResponse("".join(line + "\n" for line in lines))
 
 
 def parse_rows(text: str) -> list[dict]:
@@ -420,8 +524,72 @@ def translated_status(status: dict | None) -> dict | None:
 async def api_state(request: Request):
     require_web(request)
     STATE.ensure_indexed()
+    orders = [{**c, "z": TR.lookup("i", c["n"], c["d"], c["l"]) if c["type"] == "craft" else None}
+              for c in reversed(COMMANDS.items[-30:])]
     return {"now": time.time(), "status": translated_status(STATE.status),
-            "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version}}
+            "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version},
+            "orders": orders, "max_order": MAX_ORDER_AMOUNT}
+
+
+class OrderRequest(BaseModel):
+    n: str
+    d: int
+    l: str
+    amount: int = Field(ge=1)
+    cpu: str = ""
+
+
+class CpuCancelRequest(BaseModel):
+    index: int = Field(ge=1)
+    name: str = ""
+
+
+def require_oc_online() -> None:
+    received = (STATE.status or {}).get("received", 0)
+    if time.time() - received > 60:
+        raise HTTPException(409, "OC 程序超过 1 分钟没有上报，指令不会被执行，请先检查游戏内的 OC 电脑")
+
+
+@app.post("/api/orders")
+async def create_order(request: Request, order: OrderRequest):
+    require_web(request)
+    require_oc_online()
+    if order.amount > MAX_ORDER_AMOUNT:
+        raise HTTPException(400, f"数量超过上限 {MAX_ORDER_AMOUNT}")
+    item = next((r for r in STATE.items if r["k"] == "i" and r["c"] and r["n"] == order.n
+                 and r["d"] == order.d and r["l"] == order.l), None)
+    if not item:
+        raise HTTPException(400, "这个物品没有可用的合成样板")
+    cpus = (STATE.status or {}).get("cpus") or []
+    if order.cpu and not any(c.get("rawName") == order.cpu for c in cpus):
+        raise HTTPException(400, "找不到这个合成 CPU")
+    cmd = COMMANDS.add(type="craft", n=order.n, d=order.d, l=order.l, amount=order.amount,
+                       cpu=order.cpu)
+    return {"ok": True, "id": cmd["id"]}
+
+
+@app.post("/api/orders/{cmd_id}/cancel")
+async def cancel_order(request: Request, cmd_id: str):
+    require_web(request)
+    cmd = COMMANDS.get(cmd_id)
+    if not cmd or cmd["state"] != "queued":
+        raise HTTPException(409, "只能撤销还没被 OC 领取的指令")
+    COMMANDS.set_state(cmd, "canceled", "withdrawn before delivery")
+    COMMANDS.save()
+    return {"ok": True}
+
+
+@app.post("/api/cpus/cancel")
+async def cancel_cpu(request: Request, req: CpuCancelRequest):
+    require_web(request)
+    require_oc_online()
+    cpus = (STATE.status or {}).get("cpus") or []
+    cpu = next((c for c in cpus if c.get("index") == req.index), None)
+    if not cpu or (cpu.get("rawName") or "") != req.name or not cpu.get("busy"):
+        raise HTTPException(409, "CPU 状态已变化，请刷新后再试")
+    cmd = COMMANDS.add(type="cancel_cpu", index=req.index, cpu=req.name, n="", d=0,
+                       l=cpu.get("name", ""), amount=0)
+    return {"ok": True, "id": cmd["id"]}
 
 
 @app.get("/api/items")
