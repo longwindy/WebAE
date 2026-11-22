@@ -1,0 +1,4 @@
+backend/.venv/
+backend/config.toml
+backend/data/
+__pycache__/

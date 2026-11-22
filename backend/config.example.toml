@@ -1,0 +1,17 @@
+# Copy this file to config.toml and change every value.
+
+# Address the backend listens on. Keep 127.0.0.1 when a tunnel
+# (cloudflared / frp) runs on the same machine; use 0.0.0.0 only when
+# the port is exposed directly.
+host = "127.0.0.1"
+port = 8765
+
+# Shared secret between the OC program and the backend.
+# Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
+oc_token = "CHANGE-ME-oc-token"
+
+# Password for the web page.
+web_password = "CHANGE-ME-web-password"
+
+# Where the last received data is kept so it survives a restart.
+data_dir = "data"

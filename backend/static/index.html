@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AE 网络</title>
+<style>
+:root{
+  --bg:#f4f5f7;--card:#fff;--fg:#1d2330;--muted:#6b7280;--line:#e1e4ea;--soft:#f0f2f5;
+  --accent:#2f6fde;--ok:#1f8a5b;--warn:#b7791f;--err:#c2412d;--bar:#2f6fde;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#14171c;--card:#1d2128;--fg:#e6e8eb;--muted:#9aa1ad;--line:#30353f;--soft:#252a33;
+  --accent:#6b9cf0;--ok:#4cc38a;--warn:#e0a84a;--err:#ef7d68;--bar:#6b9cf0;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:2;background:var(--card);border-bottom:1px solid var(--line)}
+.bar{max-width:1200px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;margin-right:auto}
+h2{font-size:15px;margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
+h2 small{font-weight:400;color:var(--muted);font-size:13px}
+main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
+.pill{font-size:12px;padding:2px 9px;border-radius:999px;background:var(--soft);color:var(--muted);white-space:nowrap}
+.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.err{color:var(--err)}
+button,select,input{font:inherit;color:inherit}
+button{background:var(--soft);border:1px solid var(--line);border-radius:7px;padding:5px 12px;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--soft);border-radius:8px;padding:10px 12px}
+.stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:12px}
+.meter{height:8px;background:var(--soft);border-radius:4px;overflow:hidden;margin:4px 0 14px}
+.meter i{display:block;height:100%;background:var(--bar)}
+.cpus{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.cpu{border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
+.cpu.busy{border-color:var(--accent)}
+.cpu .top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.cpu .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cpu .meta{color:var(--muted);font-size:12px}
+.cpu .out{margin-top:6px;overflow-wrap:anywhere}
+details{margin-top:6px;font-size:13px}
+summary{cursor:pointer;color:var(--muted)}
+details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
+.tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.tools input{flex:1 1 220px;min-width:0;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:transparent}
+.tools select{padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card)}
+.table{width:100%;border-collapse:collapse;table-layout:fixed}
+.table td{padding:6px 4px;border-top:1px solid var(--line);vertical-align:top}
+.table td:last-child{text-align:right;width:120px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.label{overflow-wrap:anywhere}
+.reg{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--soft);color:var(--muted);margin-left:6px}
+.pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;color:var(--muted)}
+.empty{color:var(--muted);padding:12px 0}
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <h1>AE 网络</h1>
+  <span id="statusPill" class="pill">等待数据</span>
+  <span id="itemsPill" class="pill">库存：无</span>
+  <form method="post" action="logout"><button>退出</button></form>
+</div></header>
+<main>
+  <section>
+    <h2>能量</h2>
+    <div id="power" class="empty">还没有收到 OC 的上报</div>
+  </section>
+  <section>
+    <h2>合成 CPU <small id="cpuSummary"></small></h2>
+    <div id="cpus" class="cpus"></div>
+  </section>
+  <section>
+    <h2>库存 <small id="itemsMeta"></small></h2>
+    <div class="tools">
+      <input id="q" type="search" placeholder="搜索名称或注册名（空格分隔多个关键词）">
+      <select id="kind">
+        <option value="all">全部</option><option value="i">物品</option>
+        <option value="f">流体</option><option value="c">可合成</option>
+      </select>
+      <select id="sort">
+        <option value="size:desc">数量 多→少</option><option value="size:asc">数量 少→多</option>
+        <option value="name:asc">名称 A→Z</option>
+      </select>
+    </div>
+    <table class="table"><tbody id="rows"></tbody></table>
+    <div id="itemsEmpty" class="empty" hidden>没有匹配的条目</div>
+    <div class="pager">
+      <span id="pageInfo"></span>
+      <button id="prev">上一页</button><button id="next">下一页</button>
+    </div>
+  </section>
+</main>
+<script>
+const PAGE = 100;
+const $ = id => document.getElementById(id);
+const compact = new Intl.NumberFormat("zh-CN", {notation: "compact", maximumFractionDigits: 2});
+const full = new Intl.NumberFormat("zh-CN");
+let offset = 0, total = 0, lastItemsUpdate = null, itemsTimer = null;
+
+const esc = s => String(s ?? "").replace(/§./g, "").replace(/[&<>"]/g,
+  c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const num = n => Math.abs(n) >= 10000 ? compact.format(n) : full.format(Math.round(n * 10) / 10);
+const bytes = n => {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${Math.round(n * 10) / 10} ${units[i]}`;
+};
+const ago = s => s < 60 ? `${Math.round(s)} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前`
+  : `${Math.round(s / 3600)} 小时前`;
+
+async function api(path) {
+  const res = await fetch(path, {cache: "no-store"});
+  if (res.status === 401) { location.href = "login"; throw new Error("login"); }
+  if (!res.ok) throw new Error(res.status);
+  return res.json();
+}
+
+function pill(el, text, cls) { el.textContent = text; el.className = "pill " + cls; }
+
+function renderPower(p) {
+  if (!p) return;
+  const pct = p.max > 0 ? Math.min(100, p.stored / p.max * 100) : 0;
+  $("power").className = "";
+  $("power").innerHTML = `
+    <div class="meta">储能 ${num(p.stored)} / ${num(p.max)} AE（${pct.toFixed(1)}%）</div>
+    <div class="meter"><i style="width:${pct}%"></i></div>
+    <div class="stats">
+      <div class="stat"><b>${num(p.avgUse)}</b><span>平均消耗 AE/t</span></div>
+      <div class="stat"><b>${num(p.avgInject)}</b><span>平均输入 AE/t</span></div>
+      <div class="stat"><b>${num(p.idle)}</b><span>待机消耗 AE/t</span></div>
+    </div>`;
+}
+
+const itemText = it => `${esc(it.l)} × ${num(it.s)}`;
+const itemList = (title, list, more) => list && list.length ? `<details><summary>${title}（${list.length}${more ? "+" : ""}）</summary>
+  <ul>${list.map(it => `<li>${itemText(it)}</li>`).join("")}</ul></details>` : "";
+
+function renderCpus(cpus) {
+  cpus = cpus || [];
+  const busy = cpus.filter(c => c.busy).length;
+  $("cpuSummary").textContent = cpus.length ? `忙碌 ${busy} / 共 ${cpus.length}` : "";
+  const open = new Set([...document.querySelectorAll("#cpus details[open]")].map(d => d.dataset.key));
+  const sorted = [...cpus].sort((a, b) => (b.busy - a.busy) || a.name.localeCompare(b.name));
+  $("cpus").innerHTML = sorted.length ? sorted.map(c => `
+    <div class="cpu ${c.busy ? "busy" : ""}">
+      <div class="top"><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
+        <span class="pill ${c.busy ? "ok" : ""}">${c.busy ? "合成中" : "空闲"}</span></div>
+      <div class="meta">${bytes(c.storage)} · 协处理器 ${c.coprocessors}</div>
+      ${c.busy ? `<div class="out">目标：${c.final ? itemText(c.final)
+        : /No crafting monitor/.test(c.finalError || "") ? '<span class="meta">未知（CPU 里没有合成监控器）</span>'
+        : '<span class="meta">未知</span>'}</div>` : ""}
+      ${itemList("正在合成", c.active, c.truncated)}${itemList("等待中", c.pending, c.truncated)}
+    </div>`).join("") : `<div class="empty">没有合成 CPU</div>`;
+  document.querySelectorAll("#cpus details").forEach((d, i) => {
+    d.dataset.key = i; if (open.has(String(i))) d.open = true;
+  });
+}
+
+async function refreshState() {
+  let s;
+  try { s = await api("api/state"); }
+  catch (e) { if (e.message !== "login") pill($("statusPill"), "后端无响应", "err"); return; }
+  if (s.status) {
+    const age = s.now - s.status.received;
+    pill($("statusPill"), `状态 ${ago(age)}`, age < 30 ? "ok" : age < 120 ? "warn" : "err");
+    renderPower(s.status.power);
+    renderCpus(s.status.cpus);
+  }
+  const m = s.items_meta;
+  if (m) {
+    const age = s.now - m.updated;
+    pill($("itemsPill"), `库存 ${ago(age)}`, age < 300 ? "ok" : age < 1800 ? "warn" : "err");
+    $("itemsMeta").textContent =
+      `物品 ${full.format(m.items)} 种 · 流体 ${full.format(m.fluids)} 种 · 扫描耗时 ${m.scan_seconds.toFixed(1)} 秒`;
+    if (m.updated !== lastItemsUpdate) { lastItemsUpdate = m.updated; loadItems(); }
+  }
+}
+
+async function loadItems() {
+  const [sort, order] = $("sort").value.split(":");
+  const qs = new URLSearchParams({q: $("q").value, kind: $("kind").value, sort, order, offset, limit: PAGE});
+  let data;
+  try { data = await api("api/items?" + qs); } catch { return; }
+  total = data.total;
+  $("rows").innerHTML = data.rows.map(r => `<tr>
+    <td><span class="label">${esc(r.l)}</span>${r.k === "f" ? '<span class="tag">流体</span>' : ""}${r.c ? '<span class="tag">可合成</span>' : ""}
+      <span class="reg">${esc(r.n)}${r.k === "i" ? ":" + r.d : ""}</span></td>
+    <td title="${full.format(r.s)}">${num(r.s)}${r.k === "f" ? " L" : ""}</td></tr>`).join("");
+  $("itemsEmpty").hidden = data.rows.length > 0;
+  const pages = Math.max(1, Math.ceil(total / PAGE));
+  $("pageInfo").textContent = `第 ${Math.floor(offset / PAGE) + 1} / ${pages} 页 · 共 ${full.format(total)} 条`;
+  $("prev").disabled = offset === 0;
+  $("next").disabled = offset + PAGE >= total;
+}
+
+function requery() { offset = 0; clearTimeout(itemsTimer); itemsTimer = setTimeout(loadItems, 250); }
+$("q").addEventListener("input", requery);
+$("kind").addEventListener("change", requery);
+$("sort").addEventListener("change", requery);
+$("prev").addEventListener("click", () => { offset = Math.max(0, offset - PAGE); loadItems(); });
+$("next").addEventListener("click", () => { offset += PAGE; loadItems(); });
+
+refreshState();
+loadItems();
+setInterval(refreshState, 5000);
+</script>
+</body>
+</html>

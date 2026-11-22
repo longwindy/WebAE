@@ -1,0 +1,13 @@
+[project]
+name = "ae-web"
+version = "0.1.0"
+description = "Read-only web view of an AE2 network, fed by an OpenComputers program"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+]
+
+[tool.uv]
+package = false
