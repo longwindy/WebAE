@@ -18,7 +18,9 @@ local DEFAULTS = {
   STATUS_INTERVAL = 5,
   ITEMS_INTERVAL = 60,
   CHUNK_LINES = 500,
-  CPU_ITEM_LIMIT = 100,
+  CPU_ITEM_LIMIT = 300,
+  CPU_CALL_BUDGET = 60,
+  CPU_FINAL_REFRESH = 60,
   HTTP_TIMEOUT = 20,
   MAX_ITEM_ID = 32767,
   ID_BATCH = 512,
@@ -36,7 +38,9 @@ TOKEN = "CHANGE-ME-oc-token"
 -- STATUS_INTERVAL = 5    -- seconds between power/CPU reports
 -- ITEMS_INTERVAL = 60    -- seconds between full inventory snapshots
 -- CHUNK_LINES = 500      -- inventory lines per upload request
--- CPU_ITEM_LIMIT = 100   -- max active/pending entries reported per CPU
+-- CPU_ITEM_LIMIT = 300   -- max stored/active/pending entries reported per CPU list
+-- CPU_CALL_BUDGET = 60   -- AE calls (about one tick each) spent per report on busy CPU details
+-- CPU_FINAL_REFRESH = 60 -- seconds between re-reading a busy CPU's crafting target
 -- HTTP_TIMEOUT = 20      -- seconds
 -- MAX_ITEM_ID = 32767    -- highest numeric item ID scanned
 -- ID_BATCH = 512         -- item IDs read per call (split automatically if too big)
@@ -89,6 +93,8 @@ local STATUS_INTERVAL = settings.STATUS_INTERVAL
 local ITEMS_INTERVAL = settings.ITEMS_INTERVAL
 local CHUNK_LINES = settings.CHUNK_LINES
 local CPU_ITEM_LIMIT = settings.CPU_ITEM_LIMIT
+local CPU_CALL_BUDGET = settings.CPU_CALL_BUDGET
+local CPU_FINAL_REFRESH = settings.CPU_FINAL_REFRESH
 local HTTP_TIMEOUT = settings.HTTP_TIMEOUT
 local MAX_ITEM_ID = settings.MAX_ITEM_ID
 local ID_BATCH = settings.ID_BATCH
@@ -237,6 +243,21 @@ local function itemList(fn)
   return out, #list > CPU_ITEM_LIMIT
 end
 
+-- Every AE call below waits for a server tick, so busy CPUs cannot all be read
+-- in full each report once there are dozens of them. Each report reads the CPU
+-- list, then spends at most CPU_CALL_BUDGET calls refreshing the busy CPUs whose
+-- details are oldest. Only CPUs refreshed in this report carry "detail"; the
+-- backend keeps the last one for the others. The target (finalOutput) rarely
+-- changes during a job, so it is re-read only every CPU_FINAL_REFRESH seconds.
+local cpuCache = {} -- per busy CPU: { detailAt, finalAt }
+
+local function readFinal(entry, cpu)
+  -- needs a Crafting Monitor in the CPU, otherwise returns nil + reason
+  local ok, final, reason = pcall(cpu.finalOutput)
+  entry.final = ok and shortItem(final) or nil
+  entry.finalError = entry.final and "" or tostring(ok and reason or final)
+end
+
 local function collectStatus()
   local status = {
     power = {
@@ -249,6 +270,7 @@ local function collectStatus()
     cpus = emptyArray(),
     uptime = computer.uptime(),
   }
+  local now, busy, seen = computer.uptime(), {}, {}
   for i, c in ipairs(me.getCpus()) do
     local entry = {
       index = i,
@@ -257,20 +279,35 @@ local function collectStatus()
       storage = c.storage or 0,
       coprocessors = c.coprocessors or 0,
       busy = c.busy and true or false,
-      active = emptyArray(),
-      pending = emptyArray(),
     }
     if entry.busy and c.cpu then
-      -- needs a Crafting Monitor in the CPU, otherwise returns nil + reason
-      local okf, final, reason = pcall(c.cpu.finalOutput)
-      entry.final = okf and shortItem(final) or nil
-      if not entry.final then entry.finalError = tostring(okf and reason or final) end
-      local t1, t2
-      entry.active, t1 = itemList(c.cpu.activeItems)
-      entry.pending, t2 = itemList(c.cpu.pendingItems)
-      entry.truncated = t1 or t2
+      local key = table.concat({ i, entry.rawName, entry.storage }, "|")
+      cpuCache[key] = cpuCache[key] or {}
+      seen[key] = true
+      busy[#busy + 1] = { entry = entry, cpu = c.cpu, cache = cpuCache[key] }
     end
     status.cpus[#status.cpus + 1] = entry
+  end
+  for key in pairs(cpuCache) do
+    if not seen[key] then cpuCache[key] = nil end
+  end
+
+  table.sort(busy, function(a, b) return (a.cache.detailAt or -1) < (b.cache.detailAt or -1) end)
+  local calls = 0
+  for _, b in ipairs(busy) do
+    local needFinal = not b.cache.finalAt or now - b.cache.finalAt >= CPU_FINAL_REFRESH
+    local cost = needFinal and 4 or 3
+    if calls > 0 and calls + cost > CPU_CALL_BUDGET then break end
+    calls = calls + cost
+    if needFinal then
+      readFinal(b.entry, b.cpu)
+      b.cache.finalAt = now
+    end
+    local stored, t1 = itemList(b.cpu.storedItems)
+    local active, t2 = itemList(b.cpu.activeItems)
+    local pending, t3 = itemList(b.cpu.pendingItems)
+    b.entry.detail = { stored = stored, active = active, pending = pending, truncated = t1 or t2 or t3 }
+    b.cache.detailAt = now
   end
   return status
 end

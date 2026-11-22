@@ -484,6 +484,66 @@ class Commands:
 
 
 COMMANDS = Commands()
+
+
+class CpuTracker:
+    """Per busy CPU: when the job started, its target and the latest details.
+
+    OC re-reads only some busy CPUs per report ("detail"), and the target only
+    now and then (a "finalError" key marks that it was read), so both are kept
+    here between reports. The start time is exact to one report interval when
+    the CPU was seen idle in the previous report; otherwise (first report after
+    a restart, or a long gap) it is only a lower bound.
+    """
+
+    GAP = 60  # seconds without reports after which idle/busy history is unknown
+
+    def __init__(self) -> None:
+        self.jobs: dict[str, dict] = {}
+        self.prev_busy: set[str] | None = None
+        self.prev_time = 0.0
+
+    @staticmethod
+    def key(cpu: dict) -> str:
+        return f"{cpu.get('index')}|{cpu.get('rawName', '')}|{cpu.get('storage')}"
+
+    def update(self, cpus: list, now: float) -> None:
+        known_history = self.prev_busy is not None and now - self.prev_time <= self.GAP
+        busy_now = set()
+        for cpu in cpus if isinstance(cpus, list) else []:
+            if not isinstance(cpu, dict):
+                continue
+            detail = cpu.pop("detail", None)
+            final_read = "finalError" in cpu
+            final, final_error = cpu.pop("final", None), cpu.pop("finalError", None)
+            for old in ("active", "pending", "truncated"):  # older OC scripts
+                cpu.pop(old, None)
+            if not cpu.get("busy"):
+                continue
+            key = self.key(cpu)
+            busy_now.add(key)
+            job = self.jobs.get(key)
+            if job is None:
+                job = self.jobs[key] = {"since": now, "exact": known_history and key not in self.prev_busy,
+                                        "final": None, "finalError": None, "detail": None, "detailAt": None}
+            if final_read:
+                same = lambda a, b: (a or {}).get("n") == (b or {}).get("n") and (a or {}).get("d") == (b or {}).get("d")
+                if job["final"] and final and not same(job["final"], final):
+                    # one job ended and another began between two reports
+                    job.update(since=now, exact=False, detail=None, detailAt=None)
+                job["final"], job["finalError"] = final, final_error or None
+            if isinstance(detail, dict):
+                job["detail"], job["detailAt"] = detail, now
+        for key in list(self.jobs):
+            if key not in busy_now:
+                del self.jobs[key]
+        self.prev_busy, self.prev_time = busy_now, now
+
+    def job(self, cpu: dict) -> dict | None:
+        return self.jobs.get(self.key(cpu)) if cpu.get("busy") else None
+
+
+CPU_TRACKER = CpuTracker()
 MAX_ORDER_AMOUNT = int(CFG.get("max_order_amount", 1_000_000))
 MAX_ORDER_FLUID = int(CFG.get("max_order_fluid_amount", 10_000_000))  # L
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -530,6 +590,7 @@ async def oc_status(request: Request):
         raise HTTPException(400, "expected object")
     COMMANDS.apply_report(data.pop("updates", []), data.pop("tracking", []))
     data["received"] = time.time()
+    CPU_TRACKER.update(data.get("cpus"), data["received"])  # moves CPU details into the tracker
     STATE.status = data
     # Pending commands ride back on the response, one per line.
     lines = [Commands.wire(c) for c in COMMANDS.to_deliver()]
@@ -652,26 +713,48 @@ async def index(request: Request):
                         headers={"Cache-Control": "no-store"})
 
 
+def translate_item(item):
+    if not isinstance(item, dict):
+        return item
+    n, d, l = item.get("n", ""), item.get("d", 0), item.get("l", "")
+    zh = TR.lookup("i", n, d, l)
+    return {**item, "z": zh, "ic": ICONS.lookup("i", n, d, l, zh)}
+
+
+def cpu_summary(cpu: dict) -> dict:
+    """CPU list entry: static info plus, when busy, target, start time and detail age."""
+    job = CPU_TRACKER.job(cpu)
+    out = dict(cpu)
+    if job:
+        detail = job["detail"] or {}
+        out.update(final=translate_item(job["final"]), finalError=job["finalError"],
+                   since=job["since"], exact=job["exact"], detailAt=job["detailAt"],
+                   counts={k: len(detail.get(k) or []) for k in ("stored", "active", "pending")})
+    return out
+
+
+def cpu_rows(detail: dict) -> list[dict]:
+    """Merge the stored/active/pending lists into one row per item, like the monitor GUI."""
+    rows: dict[tuple, dict] = {}
+    for field, short in (("stored", "s"), ("active", "a"), ("pending", "p")):
+        for it in detail.get(field) or []:
+            key = (it.get("n", ""), it.get("d", 0), it.get("l", ""))
+            row = rows.setdefault(key, {"n": key[0], "d": key[1], "l": key[2], "s": 0, "a": 0, "p": 0})
+            row[short] += it.get("s", 0)
+    out = []
+    for row in rows.values():
+        row = translate_item(row)
+        row["_key"] = "\0".join((row["n"], row["l"], row["z"] or "")).lower()
+        row["_py"] = pinyin_index(row["z"]) if row["z"] else None
+        out.append(row)
+    out.sort(key=lambda r: (-(r["a"] > 0), -(r["p"] > 0), (r["z"] or r["l"]).lower()))
+    return out
+
+
 def translated_status(status: dict | None) -> dict | None:
-    """Copy of the status with a Chinese name "z" added to every CPU item."""
     if not status:
         return status
-
-    def tr(item):
-        if not isinstance(item, dict):
-            return item
-        n, d, l = item.get("n", ""), item.get("d", 0), item.get("l", "")
-        zh = TR.lookup("i", n, d, l)
-        return {**item, "z": zh, "ic": ICONS.lookup("i", n, d, l, zh)}
-
-    cpus = []
-    for cpu in status.get("cpus") or []:
-        cpu = dict(cpu)
-        cpu["final"] = tr(cpu.get("final"))
-        cpu["active"] = [tr(i) for i in cpu.get("active") or []]
-        cpu["pending"] = [tr(i) for i in cpu.get("pending") or []]
-        cpus.append(cpu)
-    return {**status, "cpus": cpus}
+    return {**status, "cpus": [cpu_summary(c) for c in status.get("cpus") or []]}
 
 
 @app.get("/api/state")
@@ -687,6 +770,25 @@ async def api_state(request: Request):
     return {"now": time.time(), "status": translated_status(STATE.status),
             "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version},
             "orders": orders, "max_order": MAX_ORDER_AMOUNT, "max_order_fluid": MAX_ORDER_FLUID}
+
+
+@app.get("/api/cpus/{index}")
+async def api_cpu(request: Request, index: int, q: str = ""):
+    """One CPU with its merged stored/active/pending rows, optionally searched."""
+    require_web(request)
+    STATE.ensure_indexed()
+    cpu = next((c for c in (STATE.status or {}).get("cpus") or [] if c.get("index") == index), None)
+    if not cpu:
+        raise HTTPException(404, "没有这个 CPU")
+    job = CPU_TRACKER.job(cpu)
+    rows = cpu_rows(job["detail"]) if job and job["detail"] else []
+    total = len(rows)
+    terms = q.lower().split()
+    if terms:
+        rows = [r for r in rows if all(term_matches(t, r) for t in terms)]
+    return {"now": time.time(), "cpu": cpu_summary(cpu), "total": total,
+            "truncated": bool(job and (job["detail"] or {}).get("truncated")),
+            "rows": [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]}
 
 
 class OrderRequest(BaseModel):

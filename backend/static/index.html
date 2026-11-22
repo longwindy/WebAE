@@ -8,10 +8,12 @@
 :root{
   --bg:#f4f5f7;--card:#fff;--fg:#1d2330;--muted:#6b7280;--line:#e1e4ea;--soft:#f0f2f5;
   --accent:#2f6fde;--ok:#1f8a5b;--warn:#b7791f;--err:#c2412d;--bar:#2f6fde;
+  --act-bg:#e2f1e4;--pend-bg:#f6f0d6;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#14171c;--card:#1d2128;--fg:#e6e8eb;--muted:#9aa1ad;--line:#30353f;--soft:#252a33;
   --accent:#6b9cf0;--ok:#4cc38a;--warn:#e0a84a;--err:#ef7d68;--bar:#6b9cf0;
+  --act-bg:#1f3a2b;--pend-bg:#3a3420;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
@@ -33,16 +35,32 @@ button:disabled{opacity:.45;cursor:default}
 .stat span{color:var(--muted);font-size:12px}
 .meter{height:8px;background:var(--soft);border-radius:4px;overflow:hidden;margin:4px 0 14px}
 .meter i{display:block;height:100%;background:var(--bar)}
-.cpus{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
-.cpu{border:1px solid var(--line);border-radius:8px;padding:10px 12px;min-width:0}
-.cpu.busy{border-color:var(--accent)}
-.cpu .top{display:flex;justify-content:space-between;gap:8px;align-items:center}
-.cpu .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cpu .meta{color:var(--muted);font-size:12px}
-.cpu .out{margin-top:6px;overflow-wrap:anywhere}
-details{margin-top:6px;font-size:13px}
-summary{cursor:pointer;color:var(--muted)}
-details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
+.cpuwrap{display:grid;grid-template-columns:250px minmax(0,1fr);gap:12px;align-items:start}
+.cpulist{display:flex;flex-direction:column;gap:6px;max-height:680px;overflow:auto}
+.cpuitem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;align-items:center;text-align:left;
+  width:100%;padding:7px 9px;border:1px solid var(--line);border-left-width:3px;border-radius:8px;background:var(--card)}
+.cpuitem.busy{border-left-color:var(--ok)}
+.cpuitem.sel{border-color:var(--accent);background:var(--soft)}
+.cpuitem .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cpuitem .tgt{display:inline-flex;gap:4px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums}
+.cpuitem .meta{grid-column:1 / -1;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.cpudetail{min-width:0;border:1px solid var(--line);border-radius:8px;padding:10px}
+.cdhead{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-bottom:10px}
+.cdhead .target{display:flex;gap:8px;align-items:center;font-weight:600;min-width:0;overflow-wrap:anywhere}
+.cdhead .time{font-variant-numeric:tabular-nums}
+.cdhead .meta{color:var(--muted);font-size:12px}
+.cdhead .spacer{flex:1}
+.cdhead input{flex:0 1 240px;min-width:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:transparent}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:6px}
+.ccell{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 8px;
+  border:1px solid var(--line);border-radius:6px;min-width:0}
+.ccell .txt{min-width:0;font-size:12px;line-height:1.45}
+.ccell .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ccell .ln{color:var(--muted);font-variant-numeric:tabular-nums}
+.ccell .ln.act{color:var(--ok);font-weight:600}
+.ccell.active{background:var(--act-bg)}
+.ccell.pending{background:var(--pend-bg)}
+@media (max-width:760px){.cpuwrap{grid-template-columns:1fr}.cpulist{max-height:300px}}
 .tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .tools input{flex:1 1 220px;min-width:0;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:transparent}
 .tools select{padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card)}
@@ -83,8 +101,6 @@ details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
 .ic{width:32px;height:32px;flex:none;image-rendering:pixelated;vertical-align:middle}
 .ic.s{width:20px;height:20px}
 .ic.none{display:inline-block;border-radius:4px;background:var(--soft)}
-.ilist li{display:flex;gap:6px;align-items:center;list-style:none}
-details ul.ilist{padding-left:4px}
 .inline{display:inline-flex;gap:6px;align-items:center;vertical-align:middle;max-width:100%}
 dialog .head{display:flex;gap:12px;align-items:center;margin-bottom:12px}
 dialog .head .reg{margin:0}
@@ -92,7 +108,6 @@ dialog .head .reg{margin:0}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.danger{color:var(--err)}
 button.small{padding:1px 8px;font-size:12px}
-.cpu .actions{margin-top:8px;text-align:right}
 .orders{display:grid;gap:0}
 .order{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:8px 0;border-top:1px solid var(--line)}
 .order:first-child{border-top:0}
@@ -127,7 +142,21 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
   </section>
   <section>
     <h2>合成 CPU <small id="cpuSummary"></small></h2>
-    <div id="cpus" class="cpus"></div>
+    <div class="cpuwrap">
+      <div id="cpuList" class="cpulist"><div class="empty">没有合成 CPU</div></div>
+      <div class="cpudetail">
+        <div class="cdhead">
+          <div class="target" id="cdTarget"></div>
+          <span class="time" id="cdTime"></span>
+          <span class="meta" id="cdAge"></span>
+          <span class="spacer"></span>
+          <input id="cdQ" type="search" placeholder="搜索 CPU 内物品（支持拼音）">
+          <button type="button" class="small danger" id="cdCancel" hidden>取消任务</button>
+        </div>
+        <div id="cdGrid" class="cgrid"></div>
+        <div id="cdEmpty" class="empty">选择左侧的 CPU 查看详情</div>
+      </div>
+    </div>
   </section>
   <section>
     <h2>订单 <small>点库存里标着"可合成"的物品下单</small></h2>
@@ -262,45 +291,119 @@ function renderPower(p) {
 const icon = (ic, cls = "") => ic
   ? `<img class="ic ${cls}" src="icons/${ic}.png" loading="lazy" alt="">`
   : `<span class="ic ${cls} none"></span>`;
-const itemText = it => `<span class="inline">${icon(it.ic, "s")}<span title="${esc(it.l)}">${esc(it.z || it.l)}</span></span>`
-  + ` × <span title="${exact(it.s)}">${num(it.s)}</span>`;
-const itemList = (title, list, more) => list && list.length ? `<details><summary>${title}（${list.length}${more ? "+" : ""}）</summary>
-  <ul class="ilist">${list.map(it => `<li>${itemText(it)}</li>`).join("")}</ul></details>` : "";
+// ------------------------------------------------------------ crafting CPUs
+// Left: every CPU. Right: the selected one like the in-game crafting monitor,
+// one cell per item with its stored / crafting / scheduled amounts.
 
-function renderCpus(cpus) {
+const CPU_KEY = "aeweb.cpu";
+let selectedCpu = null, cpuDetailTimer = null, clockOffset = 0;
+try { selectedCpu = Number(localStorage.getItem(CPU_KEY)) || null; } catch {}
+
+const hms = s => {
+  s = Math.max(0, Math.floor(s));
+  return [Math.floor(s / 3600), Math.floor(s % 3600 / 60), s % 60].map(v => String(v).padStart(2, "0")).join(":");
+};
+// Elapsed time is counted from when the backend first saw the CPU busy; "≥" when
+// the start was not observed (backend restarted or reports paused meanwhile).
+const sinceSpan = c => `<span data-since="${c.since}" data-exact="${c.exact ? 1 : 0}" title="${c.exact
+  ? "从网页首次检测到开始合成时计时，误差约一个上报间隔" : "开始时间未观察到，实际时间更长"}"></span>`;
+
+function tickClocks() {
+  const now = Date.now() / 1000 + clockOffset;
+  document.querySelectorAll("[data-since]").forEach(el => {
+    el.textContent = (el.dataset.exact === "1" ? "" : "≥ ") + hms(now - Number(el.dataset.since));
+  });
+}
+setInterval(tickClocks, 1000);
+
+function targetHtml(c) {
+  if (!c.busy) return "空闲";
+  if (c.final) return `${icon(c.final.ic)}<span title="${esc(c.final.l)}">${esc(c.final.z || c.final.l)}</span>`
+    + `<span title="${exact(c.final.s)}">× ${num(c.final.s)}</span>`;
+  return /No crafting monitor/.test(c.finalError || "")
+    ? '<span class="meta">目标未知（CPU 里没有合成监控器）</span>' : '<span class="meta">目标未知</span>';
+}
+
+function renderCpuList(cpus) {
   cpus = cpus || [];
   const busy = cpus.filter(c => c.busy).length;
   $("cpuSummary").textContent = cpus.length ? `忙碌 ${busy} / 共 ${cpus.length}` : "";
-  const open = new Set([...document.querySelectorAll("#cpus details[open]")].map(d => d.dataset.key));
-  const sorted = [...cpus].sort((a, b) => (b.busy - a.busy) || a.name.localeCompare(b.name));
-  $("cpus").innerHTML = sorted.length ? sorted.map(c => `
-    <div class="cpu ${c.busy ? "busy" : ""}">
-      <div class="top"><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>
-        <span class="pill ${c.busy ? "ok" : ""}">${c.busy ? "合成中" : "空闲"}</span></div>
-      <div class="meta">${bytes(c.storage)} · 协处理器 ${c.coprocessors}</div>
-      ${c.busy ? `<div class="out">目标：${c.final ? itemText(c.final)
-        : /No crafting monitor/.test(c.finalError || "") ? '<span class="meta">未知（CPU 里没有合成监控器）</span>'
-        : '<span class="meta">未知</span>'}</div>` : ""}
-      ${itemList("正在合成", c.active, c.truncated)}${itemList("等待中", c.pending, c.truncated)}
-      ${c.busy && c.index ? `<div class="actions"><button class="small danger" data-cancel-cpu="${c.index}"
-        data-cpu-name="${esc(c.rawName || "")}" data-cpu-label="${esc(c.name)}">取消任务</button></div>` : ""}
-    </div>`).join("") : `<div class="empty">没有合成 CPU</div>`;
-  document.querySelectorAll("#cpus details").forEach((d, i) => {
-    d.dataset.key = i; if (open.has(String(i))) d.open = true;
-  });
+  if (!cpus.some(c => c.index === selectedCpu)) selectedCpu = (cpus.find(c => c.busy) || cpus[0] || {}).index ?? null;
+  const sorted = [...cpus].sort((a, b) => (b.busy - a.busy) || (a.index - b.index));
+  $("cpuList").innerHTML = sorted.length ? sorted.map(c => `
+    <button type="button" class="cpuitem${c.busy ? " busy" : ""}${c.index === selectedCpu ? " sel" : ""}" data-cpu="${c.index}">
+      <span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>
+      ${c.busy && c.final ? `<span class="tgt">${icon(c.final.ic, "s")}× ${num(c.final.s)}</span>` : "<span></span>"}
+      <span class="meta">${bytes(c.storage)} · 协处理器 ${c.coprocessors} · ${c.busy ? sinceSpan(c) : "空闲"}</span>
+    </button>`).join("") : `<div class="empty">没有合成 CPU</div>`;
+  tickClocks();
 }
+
+function cellHtml(r) {
+  const tip = [r.z || r.l, r.z ? r.l : null, `${r.n}:${r.d}`,
+    r.s ? `现存：${exact(r.s)}` : null, r.a ? `正在合成：${exact(r.a)}` : null, r.p ? `计划合成：${exact(r.p)}` : null]
+    .filter(Boolean).map(s => esc(s)).join("&#10;");
+  return `<div class="ccell${r.a > 0 ? " active" : r.p > 0 ? " pending" : ""}" title="${tip}">
+    <div class="txt"><div class="nm">${esc(r.z || r.l)}</div>
+      ${r.s ? `<div class="ln">现存 ${num(r.s)}</div>` : ""}${r.a ? `<div class="ln act">正在合成 ${num(r.a)}</div>` : ""}
+      ${r.p ? `<div class="ln">计划合成 ${num(r.p)}</div>` : ""}</div>${icon(r.ic)}</div>`;
+}
+
+async function loadCpuDetail() {
+  if (selectedCpu == null) return;
+  const index = selectedCpu;
+  let d;
+  try { d = await api(`api/cpus/${index}?` + new URLSearchParams({q: $("cdQ").value})); } catch { return; }
+  if (index !== selectedCpu) return; // selection changed while loading
+  const c = d.cpu;
+  $("cdTarget").innerHTML = `<span>${esc(c.name)}</span> · ${targetHtml(c)}`;
+  $("cdTime").innerHTML = c.busy ? `已合成 ${sinceSpan(c)}` : "";
+  $("cdAge").textContent = !c.busy ? "" : c.detailAt
+    ? `详情 ${ago(d.now - c.detailAt)}更新${d.truncated ? " · 列表过长，只显示一部分" : ""}` : "";
+  const cancel = $("cdCancel");
+  cancel.hidden = !c.busy;
+  Object.assign(cancel.dataset, {index: c.index, name: c.rawName || "", label: c.name});
+  $("cdGrid").innerHTML = d.rows.map(cellHtml).join("");
+  const empty = !c.busy ? "这个 CPU 当前空闲" : !c.detailAt ? "等待 OC 读取详情（CPU 很多时会轮流刷新）"
+    : !d.rows.length ? (d.total ? "没有匹配的物品" : "CPU 里没有物品") : "";
+  $("cdEmpty").textContent = empty;
+  $("cdEmpty").hidden = !empty;
+  tickClocks();
+}
+
+$("cpuList").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-cpu]");
+  if (!b) return;
+  selectedCpu = Number(b.dataset.cpu);
+  try { localStorage.setItem(CPU_KEY, String(selectedCpu)); } catch {}
+  $("cdQ").value = "";
+  $("cdGrid").innerHTML = "";
+  renderCpuList(lastState?.status?.cpus);
+  loadCpuDetail();
+});
+$("cdQ").addEventListener("input", () => { clearTimeout(cpuDetailTimer); cpuDetailTimer = setTimeout(loadCpuDetail, 250); });
+$("cdCancel").addEventListener("click", async () => {
+  const b = $("cdCancel");
+  if (!confirm(`确定要取消「${b.dataset.label}」上正在进行的合成任务吗？`)) return;
+  b.disabled = true;
+  try { await postJson("api/cpus/cancel", {index: Number(b.dataset.index), name: b.dataset.name}); refreshState(); }
+  catch (e) { alert(e.message); }
+  b.disabled = false;
+});
 
 async function refreshState() {
   let s;
   try { s = await api("api/state"); }
   catch (e) { if (e.message !== "login") pill($("statusPill"), "后端无响应", "err"); return; }
   lastState = s;
+  clockOffset = s.now - Date.now() / 1000;
   renderOrders(s.orders, s.now);
   if (s.status) {
     const age = s.now - s.status.received;
     pill($("statusPill"), `状态 ${ago(age)}`, age < 30 ? "ok" : age < 120 ? "warn" : "err");
     renderPower(s.status.power);
-    renderCpus(s.status.cpus);
+    renderCpuList(s.status.cpus);
+    loadCpuDetail();
   }
   const t = s.i18n || {};
   const i18nText = t.error ? `汉化文件读取失败：${t.error}`
@@ -493,13 +596,6 @@ $("orderForm").addEventListener("submit", async (ev) => {
 $("rows").addEventListener("click", (ev) => {
   const el = ev.target.closest(".craftable");
   if (el) openOrder(currentRows[Number(el.dataset.i)]);
-});
-$("cpus").addEventListener("click", async (ev) => {
-  const b = ev.target.closest("[data-cancel-cpu]");
-  if (!b || !confirm(`确定要取消「${b.dataset.cpuLabel}」上正在进行的合成任务吗？`)) return;
-  b.disabled = true;
-  try { await postJson("api/cpus/cancel", {index: Number(b.dataset.cancelCpu), name: b.dataset.cpuName}); refreshState(); }
-  catch (e) { alert(e.message); b.disabled = false; }
 });
 $("orders").addEventListener("click", async (ev) => {
   const b = ev.target.closest("[data-withdraw]");
