@@ -16,11 +16,11 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
 header{position:sticky;top:0;z-index:2;background:var(--card);border-bottom:1px solid var(--line)}
-.bar{max-width:1200px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.bar{max-width:1480px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 h1{font-size:17px;margin:0;margin-right:auto}
-h2{font-size:15px;margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
+h2{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
 h2 small{font-weight:400;color:var(--muted);font-size:13px}
-main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
+main{max-width:1480px;margin:0 auto;padding:16px;display:grid;gap:16px}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
 .pill{font-size:12px;padding:2px 9px;border-radius:999px;background:var(--soft);color:var(--muted);white-space:nowrap}
 .pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}.pill.err{color:var(--err)}
@@ -46,16 +46,48 @@ details ul{margin:4px 0 0;padding-left:18px;max-height:220px;overflow:auto}
 .tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .tools input{flex:1 1 220px;min-width:0;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:transparent}
 .tools select{padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card)}
-.table{width:100%;border-collapse:collapse;table-layout:fixed}
-.table td{padding:6px 4px;border-top:1px solid var(--line);vertical-align:top}
-.table td:last-child{text-align:right;width:120px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:6px}
+.card{display:flex;gap:8px;padding:6px;border:1px solid var(--line);border-radius:8px;min-width:0;background:var(--card)}
+.card .pic{flex:0 0 34%;max-width:80px;aspect-ratio:1;display:grid;place-items:center;
+  background:var(--soft);border-radius:6px;align-self:center}
+.card .pic .ic{width:80%;height:80%}
+.card .body{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:space-between;gap:6px}
+.card .nm{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  font-size:13px;line-height:1.35;overflow-wrap:anywhere}
+.card .cnt{font-size:13px}
+.card .foot{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:2px 4px}
+.card .foot .tag{white-space:nowrap;font-size:10px;padding:0 4px}
+.card .cnt{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.card .tag{margin-left:0}
+.grid.compact{grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:4px}
+.slot{position:relative;aspect-ratio:1;display:grid;place-items:center;border:1px solid var(--line);
+  border-radius:4px;background:var(--soft);min-width:0}
+.slot .ic{width:68%;height:68%}
+.slot .cnt{position:absolute;right:3px;bottom:1px;font-size:11px;font-weight:700;line-height:1.2;
+  font-variant-numeric:tabular-nums;text-shadow:0 0 2px var(--card),0 0 2px var(--card)}
+.slot .mark{position:absolute;left:3px;top:3px;width:7px;height:7px;border-radius:50%}
+.slot .mark.can{background:var(--accent)}
+.slot .mark.fluid{background:var(--muted)}
+.craftable{cursor:pointer}
+.card.craftable:hover,.slot.craftable:hover{border-color:var(--accent)}
+@media (max-width:480px){
+  .grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px}
+  .card{gap:8px;padding:6px}
+  .card .nm{font-size:13px}
+}
 .label{overflow-wrap:anywhere}
 .reg{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--soft);color:var(--muted);margin-left:6px}
 .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;color:var(--muted)}
 .empty{color:var(--muted);padding:12px 0}
-tr.craftable{cursor:pointer}
-tr.craftable:hover td{background:var(--soft)}
+.ic{width:32px;height:32px;flex:none;image-rendering:pixelated;vertical-align:middle}
+.ic.s{width:20px;height:20px}
+.ic.none{display:inline-block;border-radius:4px;background:var(--soft)}
+.ilist li{display:flex;gap:6px;align-items:center;list-style:none}
+details ul.ilist{padding-left:4px}
+.inline{display:inline-flex;gap:6px;align-items:center;vertical-align:middle;max-width:100%}
+dialog .head{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+dialog .head .reg{margin:0}
 .tag.can{color:var(--accent)}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.danger{color:var(--err)}
@@ -113,8 +145,9 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
         <option value="size:desc">数量 多→少</option><option value="size:asc">数量 少→多</option>
         <option value="name:asc">名称 A→Z</option>
       </select>
+      <button id="viewToggle" type="button"></button>
     </div>
-    <table class="table"><tbody id="rows"></tbody></table>
+    <div id="rows" class="grid"></div>
     <div id="itemsEmpty" class="empty" hidden>没有匹配的条目</div>
     <div class="pager">
       <span id="pageInfo"></span>
@@ -124,8 +157,10 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
 </main>
 <dialog id="orderDialog">
   <form id="orderForm" method="dialog">
-    <h3 id="odName"></h3>
-    <span class="reg" id="odReg"></span>
+    <div class="head">
+      <span id="odIcon"></span>
+      <div><h3 id="odName"></h3><span class="reg" id="odReg"></span></div>
+    </div>
     <div class="meta">当前库存：<span id="odStock"></span></div>
     <label for="odAmount">数量</label>
     <input id="odAmount" type="number" min="1" step="1" value="1" required>
@@ -146,7 +181,11 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
   </form>
 </dialog>
 <script>
-const PAGE = 100;
+// Page size is a whole number of grid rows (about the view's target count), so
+// every page but the last ends on a full row; it follows the column count.
+const PAGE_TARGET = {cards: 240, compact: 480};
+const PAGE_MAX = 500; // backend limit
+let pageSize = PAGE_TARGET.cards;
 const $ = id => document.getElementById(id);
 const full = new Intl.NumberFormat("en-US");
 
@@ -220,9 +259,13 @@ function renderPower(p) {
     </div>`;
 }
 
-const itemText = it => `<span title="${esc(it.l)}">${esc(it.z || it.l)}</span> × <span title="${exact(it.s)}">${num(it.s)}</span>`;
+const icon = (ic, cls = "") => ic
+  ? `<img class="ic ${cls}" src="icons/${ic}.png" loading="lazy" alt="">`
+  : `<span class="ic ${cls} none"></span>`;
+const itemText = it => `<span class="inline">${icon(it.ic, "s")}<span title="${esc(it.l)}">${esc(it.z || it.l)}</span></span>`
+  + ` × <span title="${exact(it.s)}">${num(it.s)}</span>`;
 const itemList = (title, list, more) => list && list.length ? `<details><summary>${title}（${list.length}${more ? "+" : ""}）</summary>
-  <ul>${list.map(it => `<li>${itemText(it)}</li>`).join("")}</ul></details>` : "";
+  <ul class="ilist">${list.map(it => `<li>${itemText(it)}</li>`).join("")}</ul></details>` : "";
 
 function renderCpus(cpus) {
   cpus = cpus || [];
@@ -274,22 +317,81 @@ async function refreshState() {
   }
 }
 
+// ------------------------------------------------------------ inventory grid
+
+const VIEW_KEY = "aeweb.view";
+let compact = false;
+try { compact = localStorage.getItem(VIEW_KEY) === "compact"; } catch {}
+
+function itemTitle(r) {
+  return [r.z || r.l, r.z ? r.l : null, `${r.n}${r.k === "i" ? ":" + r.d : ""}`,
+    `数量：${exact(r.s)}${r.k === "f" ? " L" : ""}`, r.c && r.k === "i" ? "点击下单合成" : null]
+    .filter(Boolean).map(s => esc(s)).join("&#10;");
+}
+
+const countText = r => `${num(r.s)}${r.k === "f" ? " L" : ""}`;
+const clickable = r => r.c && r.k === "i";
+
+function cardHtml(r, i) {
+  const badge = clickable(r) ? '<span class="tag can">可合成</span>' : r.k === "f" ? '<span class="tag">流体</span>' : "";
+  return `<div class="card${clickable(r) ? " craftable" : ""}" data-i="${i}" title="${itemTitle(r)}">
+    <div class="pic">${icon(r.ic)}</div>
+    <div class="body"><div class="nm">${esc(r.z || r.l)}</div>
+      <div class="foot"><span class="cnt">${countText(r)}</span>${badge}</div></div>
+  </div>`;
+}
+
+function slotHtml(r, i) {
+  const mark = clickable(r) ? '<span class="mark can"></span>' : r.k === "f" ? '<span class="mark fluid"></span>' : "";
+  return `<div class="slot${clickable(r) ? " craftable" : ""}" data-i="${i}" title="${itemTitle(r)}">
+    ${mark}${icon(r.ic)}<span class="cnt">${num(r.s)}</span></div>`;
+}
+
+function applyView() {
+  $("rows").className = compact ? "grid compact" : "grid";
+  $("viewToggle").textContent = compact ? "卡片视图" : "紧凑视图";
+}
+
+function gridColumns() {
+  return Math.max(1, getComputedStyle($("rows")).gridTemplateColumns.split(" ").filter(Boolean).length);
+}
+
+function computePageSize() {
+  const cols = gridColumns();
+  const target = compact ? PAGE_TARGET.compact : PAGE_TARGET.cards;
+  const rows = Math.max(1, Math.min(Math.round(target / cols), Math.floor(PAGE_MAX / cols)));
+  return cols * rows;
+}
+
+$("viewToggle").addEventListener("click", () => {
+  compact = !compact;
+  try { localStorage.setItem(VIEW_KEY, compact ? "compact" : "cards"); } catch {}
+  applyView();
+  loadItems();
+});
+applyView();
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (computePageSize() !== pageSize) loadItems(); }, 200);
+});
+
 async function loadItems() {
   const [sort, order] = $("sort").value.split(":");
-  const qs = new URLSearchParams({q: $("q").value, kind: $("kind").value, sort, order, offset, limit: PAGE});
+  pageSize = computePageSize();
+  offset = Math.floor(offset / pageSize) * pageSize; // keep the page that held the first item
+  const qs = new URLSearchParams({q: $("q").value, kind: $("kind").value, sort, order, offset, limit: pageSize});
   let data;
   try { data = await api("api/items?" + qs); } catch { return; }
   total = data.total;
   currentRows = data.rows;
-  $("rows").innerHTML = data.rows.map((r, i) => `<tr data-i="${i}"${r.c && r.k === "i" ? ' class="craftable" title="点击下单合成"' : ""}>
-    <td><span class="label">${esc(r.z || r.l)}</span>${r.k === "f" ? '<span class="tag">流体</span>' : ""}${r.c ? '<span class="tag can">可合成</span>' : ""}
-      <span class="reg">${r.z ? esc(r.l) + " · " : ""}${esc(r.n)}${r.k === "i" ? ":" + r.d : ""}</span></td>
-    <td title="${exact(r.s)}${r.k === "f" ? " L" : ""}">${num(r.s)}${r.k === "f" ? " L" : ""}</td></tr>`).join("");
+  $("rows").innerHTML = data.rows.map(compact ? slotHtml : cardHtml).join("");
   $("itemsEmpty").hidden = data.rows.length > 0;
-  const pages = Math.max(1, Math.ceil(total / PAGE));
-  $("pageInfo").textContent = `第 ${Math.floor(offset / PAGE) + 1} / ${pages} 页 · 共 ${full.format(total)} 条`;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  $("pageInfo").textContent = `第 ${Math.floor(offset / pageSize) + 1} / ${pages} 页 · 每页 ${pageSize} 个 · 共 ${full.format(total)} 条`;
   $("prev").disabled = offset === 0;
-  $("next").disabled = offset + PAGE >= total;
+  $("next").disabled = offset + pageSize >= total;
 }
 
 // ------------------------------------------------------------ orders
@@ -319,7 +421,7 @@ function renderOrders(orders, now) {
   $("orders").innerHTML = orders.map(o => {
     const [label, cls] = ORDER_STATES[o.state] || [o.state, ""];
     const what = o.type === "craft"
-      ? `<span title="${esc(o.l)}">${esc(o.z || o.l)}</span> × ${full.format(o.amount)}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}`
+      ? `<span class="inline">${icon(o.ic, "s")}<span title="${esc(o.l)}">${esc(o.z || o.l)}</span></span> × ${full.format(o.amount)}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}`
       : `取消 CPU 任务：${esc(o.l)}`;
     const reason = reasonText(o);
     return `<div class="order">
@@ -333,6 +435,7 @@ function renderOrders(orders, now) {
 
 function openOrder(row) {
   orderItem = row;
+  $("odIcon").innerHTML = icon(row.ic);
   $("odName").textContent = (row.z || row.l).replace(/§./g, "");
   $("odReg").textContent = `${row.z ? row.l.replace(/§./g, "") + " · " : ""}${row.n}:${row.d}`;
   $("odStock").textContent = full.format(row.s);
@@ -377,8 +480,8 @@ $("orderForm").addEventListener("submit", async (ev) => {
 });
 
 $("rows").addEventListener("click", (ev) => {
-  const tr = ev.target.closest("tr.craftable");
-  if (tr) openOrder(currentRows[Number(tr.dataset.i)]);
+  const el = ev.target.closest(".craftable");
+  if (el) openOrder(currentRows[Number(el.dataset.i)]);
 });
 $("cpus").addEventListener("click", async (ev) => {
   const b = ev.target.closest("[data-cancel-cpu]");
@@ -399,8 +502,8 @@ function requery() { offset = 0; clearTimeout(itemsTimer); itemsTimer = setTimeo
 $("q").addEventListener("input", requery);
 $("kind").addEventListener("change", requery);
 $("sort").addEventListener("change", requery);
-$("prev").addEventListener("click", () => { offset = Math.max(0, offset - PAGE); loadItems(); });
-$("next").addEventListener("click", () => { offset += PAGE; loadItems(); });
+$("prev").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); loadItems(); });
+$("next").addEventListener("click", () => { offset += pageSize; loadItems(); });
 
 refreshState();
 loadItems();
