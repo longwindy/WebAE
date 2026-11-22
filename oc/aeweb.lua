@@ -20,6 +20,8 @@ local DEFAULTS = {
   CHUNK_LINES = 500,
   CPU_ITEM_LIMIT = 100,
   HTTP_TIMEOUT = 20,
+  MAX_ITEM_ID = 32767,
+  ID_BATCH = 512,
 }
 
 local TEMPLATE = [[
@@ -36,6 +38,8 @@ TOKEN = "CHANGE-ME-oc-token"
 -- CHUNK_LINES = 500      -- inventory lines per upload request
 -- CPU_ITEM_LIMIT = 100   -- max active/pending entries reported per CPU
 -- HTTP_TIMEOUT = 20      -- seconds
+-- MAX_ITEM_ID = 32767    -- highest numeric item ID scanned
+-- ID_BATCH = 512         -- item IDs read per call (split automatically if too big)
 ]]
 
 -- Returns the settings table, or nil and a message for the user.
@@ -86,6 +90,8 @@ local ITEMS_INTERVAL = settings.ITEMS_INTERVAL
 local CHUNK_LINES = settings.CHUNK_LINES
 local CPU_ITEM_LIMIT = settings.CPU_ITEM_LIMIT
 local HTTP_TIMEOUT = settings.HTTP_TIMEOUT
+local MAX_ITEM_ID = settings.MAX_ITEM_ID
+local ID_BATCH = settings.ID_BATCH
 
 ------------------------------------------------------------------ components
 
@@ -97,7 +103,7 @@ for _, kind in ipairs({ "me_controller", "me_interface" }) do
   for address in component.list(kind, true) do
     -- values are the "direct" flags (false for these), so test for presence
     local methods = component.methods(address)
-    if methods.allItems ~= nil and methods.getCpus ~= nil and methods.getStoredPower ~= nil then
+    if methods.getItemsInNetworkById ~= nil and methods.getCpus ~= nil and methods.getStoredPower ~= nil then
       me = component.proxy(address)
       break
     end
@@ -480,27 +486,41 @@ local function sendItems()
     if #buf >= CHUNK_LINES then flush(false) end
   end
 
-  -- With allowItemStackNBTTags=true every entry carries its NBT, and a single
-  -- item with huge NBT can run the computer out of memory. The iterator has
-  -- already advanced when that happens, so skip the item and keep going.
-  local nextItem, skipped = me.allItems(), 0
-  while true do
-    local ok, it = pcall(nextItem)
+  -- Items are read in batches of numeric item IDs with getItemsInNetworkById.
+  -- Not allItems(): its iterator registers as an AE listener and rebuilds the
+  -- whole storage list from inside AE's change notification, which corrupted
+  -- AE's item list and crashed the server. A batch too big for memory is split
+  -- in half and retried; a single ID that still does not fit is skipped.
+  local skipped = {}
+
+  local function scanIds(lo, hi)
+    local ids = {}
+    for id = lo, hi do ids[#ids + 1] = id end
+    local ok, list = pcall(me.getItemsInNetworkById, ids)
+    ids = nil
     if not ok then
-      if not tostring(it):find("not enough memory", 1, true) or skipped >= 100 then
-        error(it, 0)
-      end
-      skipped = skipped + 1
+      if not tostring(list):find("not enough memory", 1, true) then error(list, 0) end
+      list = nil
       collectgarbage()
-    elseif it == nil then
-      break
-    else
+      if lo == hi then
+        skipped[#skipped + 1] = lo
+        return
+      end
+      local mid = math.floor((lo + hi) / 2)
+      scanIds(lo, mid)
+      return scanIds(mid + 1, hi)
+    end
+    for i = 1, #list do
+      local it = list[i]
       add(table.concat({ "i", clean(it.name), num(it.damage), num(it.size),
         it.isCraftable and "1" or "0", clean(it.label) }, "\t"))
-      it = nil
+      list[i] = nil
     end
   end
-  nextItem = nil
+
+  for lo = 0, MAX_ITEM_ID, ID_BATCH do
+    scanIds(lo, math.min(lo + ID_BATCH - 1, MAX_ITEM_ID))
+  end
   local okf, fluids = pcall(me.getFluidsInNetwork)
   if okf and type(fluids) == "table" then
     for _, f in ipairs(fluids) do
@@ -511,7 +531,7 @@ local function sendItems()
   fluids = nil
   flush(true)
   log("inventory: %d entries in %.1fs%s", total, computer.uptime() - started,
-    skipped > 0 and string.format(", %d skipped (out of memory)", skipped) or "")
+    #skipped > 0 and (", skipped item IDs (out of memory): " .. table.concat(skipped, ",")) or "")
 end
 
 ------------------------------------------------------------------ main loop
