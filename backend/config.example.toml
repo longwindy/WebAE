@@ -16,5 +16,6 @@ web_password = "CHANGE-ME-web-password"
 # Where the last received data is kept so it survives a restart.
 data_dir = "data"
 
-# Largest amount one web order may request.
+# Largest amount one web order may request: items, and fluids in L (mB).
 max_order_amount = 1000000
+max_order_fluid_amount = 10000000

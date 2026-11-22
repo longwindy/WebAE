@@ -415,7 +415,9 @@ class Commands:
     def wire(cmd: dict) -> str:
         """One tab-separated line for OC; the label goes last as it may hold anything."""
         clean = lambda s: re.sub(r"[\t\r\n]", " ", str(s))
-        if cmd["type"] == "craft":
+        if cmd["type"] == "craft" and cmd.get("k") == "f":  # amount in L (mB)
+            fields = ["craft_fluid", cmd["id"], cmd["amount"], cmd["n"], cmd["cpu"], cmd["l"]]
+        elif cmd["type"] == "craft":
             fields = ["craft", cmd["id"], cmd["amount"], cmd["d"], cmd["n"], cmd["cpu"], cmd["l"]]
         else:
             fields = ["cancel_cpu", cmd["id"], cmd["index"], cmd["cpu"]]
@@ -424,6 +426,7 @@ class Commands:
 
 COMMANDS = Commands()
 MAX_ORDER_AMOUNT = int(CFG.get("max_order_amount", 1_000_000))
+MAX_ORDER_FLUID = int(CFG.get("max_order_fluid_amount", 10_000_000))  # L
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -618,19 +621,21 @@ async def api_state(request: Request):
     STATE.ensure_indexed()
     orders = []
     for c in reversed(COMMANDS.items[-30:]):
-        zh = TR.lookup("i", c["n"], c["d"], c["l"]) if c["type"] == "craft" else None
-        icon = ICONS.lookup("i", c["n"], c["d"], c["l"], zh) if c["type"] == "craft" else None
+        kind = c.get("k", "i")
+        zh = TR.lookup(kind, c["n"], c["d"], c["l"]) if c["type"] == "craft" else None
+        icon = ICONS.lookup(kind, c["n"], c["d"], c["l"], zh) if c["type"] == "craft" else None
         orders.append({**c, "z": zh, "ic": icon})
     return {"now": time.time(), "status": translated_status(STATE.status),
             "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version},
-            "orders": orders, "max_order": MAX_ORDER_AMOUNT}
+            "orders": orders, "max_order": MAX_ORDER_AMOUNT, "max_order_fluid": MAX_ORDER_FLUID}
 
 
 class OrderRequest(BaseModel):
+    k: str = Field("i", pattern="^[if]$")  # item or fluid
     n: str
     d: int
     l: str
-    amount: int = Field(ge=1)
+    amount: int = Field(ge=1)  # items, or L (mB) for fluids
     cpu: str = ""
 
 
@@ -649,17 +654,18 @@ def require_oc_online() -> None:
 async def create_order(request: Request, order: OrderRequest):
     require_web(request)
     require_oc_online()
-    if order.amount > MAX_ORDER_AMOUNT:
-        raise HTTPException(400, f"数量超过上限 {MAX_ORDER_AMOUNT}")
-    item = next((r for r in STATE.items if r["k"] == "i" and r["c"] and r["n"] == order.n
+    limit = MAX_ORDER_FLUID if order.k == "f" else MAX_ORDER_AMOUNT
+    if order.amount > limit:
+        raise HTTPException(400, f"数量超过上限 {limit}")
+    item = next((r for r in STATE.items if r["k"] == order.k and r["c"] and r["n"] == order.n
                  and r["d"] == order.d and r["l"] == order.l), None)
     if not item:
         raise HTTPException(400, "这个物品没有可用的合成样板")
     cpus = (STATE.status or {}).get("cpus") or []
     if order.cpu and not any(c.get("rawName") == order.cpu for c in cpus):
         raise HTTPException(400, "找不到这个合成 CPU")
-    cmd = COMMANDS.add(type="craft", n=order.n, d=order.d, l=order.l, amount=order.amount,
-                       cpu=order.cpu)
+    cmd = COMMANDS.add(type="craft", k=order.k, n=order.n, d=order.d, l=order.l,
+                       amount=order.amount, cpu=order.cpu)
     return {"ok": True, "id": cmd["id"]}
 
 

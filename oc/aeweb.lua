@@ -350,8 +350,23 @@ local function findCraftable(name, damage, label)
   return list[1]
 end
 
-local function runCraft(id, amount, damage, name, cpu, label)
-  local craftable = findCraftable(name, damage, label)
+-- Fluid patterns: ask AE for the "fluid" stack type directly, else filter by name/label.
+local function findFluidCraftable(name, label)
+  local ok, craftable = pcall(me.getCraftable, { name = name, amount = 1 }, "fluid")
+  if ok and craftable and craftable.request then return craftable end
+  for _, filter in ipairs({ { name = name }, { label = label } }) do
+    local okList, list = pcall(me.getCraftables, filter)
+    if okList and type(list) == "table" then
+      for _, c in ipairs(list) do
+        local okStack, stack = pcall(c.getStack)
+        if okStack and type(stack) == "table" and stack.name == name then return c end
+      end
+    end
+  end
+  return nil
+end
+
+local function runCraft(id, amount, cpu, craftable)
   if not craftable then return report(id, "failed", "no pattern") end
   local ok, status = pcall(craftable.request, amount, false, cpu ~= "" and cpu or nil)
   if not ok or not status then return report(id, "failed", tostring(status)) end
@@ -375,9 +390,12 @@ local function runCommands(text)
     local kind, id = f[1], f[2]
     if id and handled[id] then
       if not isTracked(id) then report(id, "lost", "already handled") end
-    elseif kind == "craft" and #f >= 7 then
+    elseif kind == "craft" and #f >= 7 then -- craft id amount damage name cpu label
       markHandled(id)
-      runCraft(id, tonumber(f[3]), tonumber(f[4]), f[5], f[6], f[7])
+      runCraft(id, tonumber(f[3]), f[6], findCraftable(f[5], tonumber(f[4]), f[7]))
+    elseif kind == "craft_fluid" and #f >= 6 then -- craft_fluid id amount(L) name cpu label
+      markHandled(id)
+      runCraft(id, tonumber(f[3]), f[5], findFluidCraftable(f[4], f[6]))
     elseif kind == "cancel_cpu" and #f >= 4 then
       markHandled(id)
       runCancelCpu(id, tonumber(f[3]), f[4])
@@ -486,7 +504,8 @@ local function sendItems()
   local okf, fluids = pcall(me.getFluidsInNetwork)
   if okf and type(fluids) == "table" then
     for _, f in ipairs(fluids) do
-      add(table.concat({ "f", clean(f.name), "0", num(f.amount), "0", clean(f.label) }, "\t"))
+      add(table.concat({ "f", clean(f.name), "0", num(f.amount),
+        f.isCraftable and "1" or "0", clean(f.label) }, "\t"))
     end
   end
   fluids = nil
