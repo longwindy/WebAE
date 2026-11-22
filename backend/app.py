@@ -23,6 +23,7 @@ import time
 import tomllib
 from pathlib import Path
 
+import pypinyin
 import uvicorn
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
@@ -277,14 +278,72 @@ class Icons:
 
 ICONS = Icons()
 
+# ---------------------------------------------------------------- pinyin search
+# JECH-style: a query matches a run of consecutive characters in the Chinese
+# name when each character is matched by itself or by a non-empty prefix of
+# any of its readings, so "tieding", "td", "tied" and "铁d" all find 铁锭.
+
+_READINGS: dict[str, tuple[str, ...]] = {}
+
+
+def char_readings(ch: str) -> tuple[str, ...]:
+    readings = _READINGS.get(ch)
+    if readings is None:
+        readings = ()
+        if "㐀" <= ch <= "鿿":
+            options = pypinyin.pinyin(ch, style=pypinyin.Style.NORMAL, heteronym=True)[0]
+            readings = tuple(sorted({p for p in options if p.isascii() and p.isalpha()}))
+        _READINGS[ch] = readings
+    return readings
+
+
+def pinyin_index(text: str) -> tuple[list[tuple[str, tuple[str, ...]]], frozenset[str]]:
+    """Per-character readings plus every letter/character a match can start with."""
+    chars = [(ch, char_readings(ch)) for ch in text.lower()]
+    starts = frozenset(ch for ch, _ in chars) | frozenset(r[0] for _, rs in chars for r in rs)
+    return chars, starts
+
+
+def pinyin_match(term: str, index) -> bool:
+    chars, starts = index
+    if term[0] not in starts:
+        return False
+    m = len(term)
+    for start in range(len(chars)):
+        positions = {0}
+        for ch, readings in chars[start:]:
+            reached = set()
+            for pos in positions:
+                if term[pos] == ch:
+                    reached.add(pos + 1)
+                for reading in readings:
+                    k = 0
+                    while k < len(reading) and pos + k < m and term[pos + k] == reading[k]:
+                        k += 1
+                        reached.add(pos + k)
+            if m in reached:
+                return True
+            positions = reached
+            if not positions:
+                break
+    return False
+
+
+def term_matches(term: str, row: dict) -> bool:
+    if term in row["_key"]:
+        return True
+    return (row["_py"] is not None and any("a" <= c <= "z" for c in term)
+            and pinyin_match(term, row["_py"]))
+
 
 def index_rows(rows: list[dict]) -> None:
-    """Attach the Chinese name, icon and lower-cased search text to each row."""
+    """Attach the Chinese name, icon and search data to each row."""
     for row in rows:
         zh = TR.lookup(row["k"], row["n"], row["d"], row["l"])
         row["_zh"] = zh
         row["_ic"] = ICONS.lookup(row["k"], row["n"], row["d"], row["l"], zh)
         row["_key"] = "\0".join((row["n"], row["l"], zh or "")).lower()
+        row["_py"] = pinyin_index(zh) if zh else None
 
 
 class State:
@@ -705,7 +764,7 @@ async def api_items(request: Request, q: str = "", kind: str = "all", sort: str 
         rows = [r for r in rows if r["c"]]
     terms = q.lower().split()
     if terms:
-        rows = [r for r in rows if all(t in r["_key"] for t in terms)]
+        rows = [r for r in rows if all(term_matches(t, r) for t in terms)]
     if sort == "name":
         rows = sorted(rows, key=lambda r: (r["_zh"] or r["l"]).lower(), reverse=(order == "desc"))
     else:
