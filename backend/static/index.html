@@ -767,7 +767,16 @@ function requery() {
 }
 $("q").addEventListener("input", requery);
 $("kind").addEventListener("change", requery);
-$("sort").addEventListener("change", requery);
+// Remember the sort choice per browser; ignore a stored value that is no longer an option.
+const SORT_KEY = "aeweb.sort";
+try {
+  const saved = localStorage.getItem(SORT_KEY);
+  if (saved && [...$("sort").options].some(o => o.value === saved)) $("sort").value = saved;
+} catch {}
+$("sort").addEventListener("change", () => {
+  try { localStorage.setItem(SORT_KEY, $("sort").value); } catch {}
+  requery();
+});
 $("prev").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); resetInvScroll = true; loadItems(); });
 $("next").addEventListener("click", () => { offset += pageSize; resetInvScroll = true; loadItems(); });
 
