@@ -401,7 +401,8 @@ class Commands:
     RESEND_AFTER = 30
     EXPIRE_AFTER = 300
     LOST_AFTER = 60
-    KEEP = 200
+    KEEP_ORDERS = 10  # finished craft orders kept for the history panel
+    KEEP_OTHER = 20   # finished CPU-cancel commands, kept only for bookkeeping
     TERMINAL = {"done", "failed", "canceled", "expired", "lost", "error"}
 
     def __init__(self) -> None:
@@ -411,9 +412,24 @@ class Commands:
                 self.items = json.loads(self.FILE.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 print(f"Ignoring unreadable {self.FILE}: {exc}")
+        self.prune()
+
+    def prune(self) -> None:
+        """Drop finished commands beyond the keep limits; unfinished ones always stay."""
+        budget = {"craft": self.KEEP_ORDERS}
+        keep = []
+        for cmd in reversed(self.items):
+            if cmd["state"] in self.TERMINAL:
+                kind = "craft" if cmd.get("type") == "craft" else "other"
+                left = budget.get(kind, self.KEEP_OTHER)
+                if left <= 0:
+                    continue
+                budget[kind] = left - 1
+            keep.append(cmd)
+        self.items = keep[::-1]
 
     def save(self) -> None:
-        self.items = self.items[-self.KEEP:]
+        self.prune()
         self.FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.items, ensure_ascii=False), encoding="utf-8")
@@ -432,6 +448,8 @@ class Commands:
 
     def set_state(self, cmd: dict, state: str, msg: str = "") -> None:
         cmd["state"], cmd["msg"], cmd["updated"] = state, msg, time.time()
+        if state in self.TERMINAL and not cmd.get("finished"):
+            cmd["finished"] = cmd["updated"]
 
     def apply_report(self, updates: list, tracking: list) -> None:
         """Apply state updates from OC and notice jobs OC is no longer tracking."""
@@ -762,10 +780,12 @@ async def api_state(request: Request):
     require_web(request)
     STATE.ensure_indexed()
     orders = []
-    for c in reversed(COMMANDS.items[-30:]):
+    for c in reversed(COMMANDS.items):
+        if c["type"] != "craft":
+            continue
         kind = c.get("k", "i")
-        zh = TR.lookup(kind, c["n"], c["d"], c["l"]) if c["type"] == "craft" else None
-        icon = ICONS.lookup(kind, c["n"], c["d"], c["l"], zh) if c["type"] == "craft" else None
+        zh = TR.lookup(kind, c["n"], c["d"], c["l"])
+        icon = ICONS.lookup(kind, c["n"], c["d"], c["l"], zh)
         orders.append({**c, "z": zh, "ic": icon})
     return {"now": time.time(), "status": translated_status(STATE.status),
             "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version},

@@ -108,12 +108,15 @@ dialog .head .reg{margin:0}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.danger{color:var(--err)}
 button.small{padding:1px 8px;font-size:12px}
-.orders{display:grid;gap:0}
-.order{display:grid;grid-template-columns:1fr auto;gap:2px 12px;padding:8px 0;border-top:1px solid var(--line)}
-.order:first-child{border-top:0}
-.order .what{overflow-wrap:anywhere}
-.order .meta{color:var(--muted);font-size:12px;grid-column:1}
-.order .right{grid-row:1 / span 2;grid-column:2;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.orders{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.orders .empty{grid-column:1 / -1}
+.ocard{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 10px;align-items:center;min-width:0;
+  padding:8px 10px;border:1px solid var(--line);border-left-width:3px;border-radius:8px;background:var(--card)}
+.ocard.ok{border-left-color:var(--ok)}.ocard.warn{border-left-color:var(--warn)}.ocard.err{border-left-color:var(--err)}
+.ocard .ic{grid-row:1 / span 2}
+.ocard .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ocard .amt{font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ocard .meta{grid-column:1 / -1;color:var(--muted);font-size:12px;overflow-wrap:anywhere;margin-top:2px}
 dialog{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg);
   padding:20px;width:min(420px,calc(100vw - 32px))}
 dialog::backdrop{background:rgba(0,0,0,.45)}
@@ -159,7 +162,7 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
     </div>
   </section>
   <section>
-    <h2>订单 <small>点库存里标着"可合成"的物品下单</small></h2>
+    <h2>历史订单</h2>
     <div id="orders" class="orders"><div class="empty">还没有订单</div></div>
   </section>
   <section>
@@ -250,6 +253,12 @@ const bytes = n => {
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return `${Math.round(n * 10) / 10} ${units[i]}`;
 };
+const dur = s => {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  return `${Math.floor(s / 3600)} 小时 ${Math.floor(s % 3600 / 60)} 分`;
+};
 const ago = s => s < 60 ? `${Math.round(s)} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前`
   : `${Math.round(s / 3600)} 小时前`;
 
@@ -310,6 +319,7 @@ const sinceSpan = c => `<span data-since="${c.since}" data-exact="${c.exact ? 1 
 
 function tickClocks() {
   const now = Date.now() / 1000 + clockOffset;
+  document.querySelectorAll("[data-run]").forEach(el => { el.textContent = dur(now - Number(el.dataset.run)); });
   document.querySelectorAll("[data-since]").forEach(el => {
     el.textContent = (el.dataset.exact === "1" ? "" : "≥ ") + hms(now - Number(el.dataset.since));
   });
@@ -501,10 +511,12 @@ async function loadItems() {
 
 // ------------------------------------------------------------ orders
 
+// [label, pill colour, card edge colour]
 const ORDER_STATES = {
-  queued: ["排队中", ""], sent: ["已发送", ""], computing: ["计算中", "warn"], crafting: ["合成中", "ok"],
-  done: ["完成", "ok"], failed: ["失败", "err"], canceled: ["已取消", ""], expired: ["已过期", "err"],
-  lost: ["状态未知", "warn"], error: ["错误", "err"],
+  queued: ["排队中", "", "warn"], sent: ["已发送", "", "warn"], computing: ["计算中", "warn", "warn"],
+  crafting: ["合成中", "ok", "ok"], done: ["完成", "ok", "ok"], failed: ["失败", "err", "err"],
+  canceled: ["已取消", "", ""], expired: ["已过期", "err", "err"], lost: ["状态未知", "warn", "warn"],
+  error: ["错误", "err", "err"],
 };
 const REASONS = [
   [/missing resources/i, "材料不足"],
@@ -521,21 +533,32 @@ const reasonText = (o) => {
   return hit ? hit[1] : (o.msg || "");
 };
 
+// Footer: finished orders show how long they took, failed ones why, running ones a live clock.
+function orderFooter(o) {
+  if (o.state === "done") return `耗时 ${o.finished ? dur(o.finished - o.created) : "—"}`;
+  if (o.state === "computing" || o.state === "crafting") return `已耗时 <span data-run="${o.created}"></span>`;
+  if (o.state === "queued" || o.state === "sent") return "等待 OC 领取";
+  return esc(reasonText(o));
+}
+
 function renderOrders(orders, now) {
-  if (!orders || !orders.length) return;
+  if (!orders || !orders.length) {
+    $("orders").innerHTML = '<div class="empty">还没有订单</div>';
+    return;
+  }
   $("orders").innerHTML = orders.map(o => {
-    const [label, cls] = ORDER_STATES[o.state] || [o.state, ""];
-    const what = o.type === "craft"
-      ? `<span class="inline">${icon(o.ic, "s")}<span title="${esc(o.l)}">${esc(o.z || o.l)}</span></span> × ${full.format(o.amount)}${o.k === "f" ? " L" : ""}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}`
-      : `取消 CPU 任务：${esc(o.l)}`;
-    const reason = reasonText(o);
-    return `<div class="order">
-      <div class="what">${what}</div>
-      <div class="meta">${ago(now - o.created)}下单${reason ? " · " + esc(reason) : ""}</div>
-      <div class="right"><span class="pill ${cls}">${label}</span>
-        ${o.state === "queued" ? `<button class="small" data-withdraw="${esc(o.id)}">撤回</button>` : ""}</div>
+    const [label, pill, edge] = ORDER_STATES[o.state] || [o.state, "", ""];
+    const foot = orderFooter(o);
+    return `<div class="ocard ${edge}">
+      ${icon(o.ic)}
+      <span class="name" title="${esc(o.l)}">${esc(o.z || o.l)}</span>
+      <span class="pill ${pill}">${label}</span>
+      <span class="amt">× ${full.format(o.amount)}${o.k === "f" ? " L" : ""}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}</span>
+      ${o.state === "queued" ? `<button class="small" data-withdraw="${esc(o.id)}">撤回</button>` : "<span></span>"}
+      <div class="meta">${ago(now - o.created)}下单${foot ? " · " + foot : ""}</div>
     </div>`;
   }).join("");
+  tickClocks();
 }
 
 // Fluids are ordered in L (mB); they get their own limit and confirmation threshold.
