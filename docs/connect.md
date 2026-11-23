@@ -62,7 +62,9 @@
 
 **装机：**
 打开机箱，放入你的配件：
+
 <img src="img/case-inside.png" alt="" width="600">
+
 如果你的机箱没有放置软盘的地方，可以将软盘放入旁边的 <img src="img/oc-disk-drive.png" alt="" width="24">软盘驱动器中。
 
 完成安装后按下机箱中央的开机按键即可启动电脑
