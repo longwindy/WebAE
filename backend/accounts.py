@@ -28,8 +28,14 @@ CONFIG_PATH = Path(os.environ.get("AEWEB_CONFIG", BASE_DIR / "config.toml"))
 
 ROLES = ("viewer", "member", "owner")  # each role can do everything the ones before it can
 ROLE_NAMES = {"viewer": "只读", "member": "成员", "owner": "所有者"}
-NET_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
-USER_NAME = re.compile(r"[^\s\x00-\x1f/\\]{1,32}")
+# Users and networks are both known only by their name. A network's name is also its
+# data folder name, so it must be a valid file name on Windows and Linux too.
+NAME = re.compile(r'[^\s\x00-\x1f/\\:*?"<>|]{1,32}')
+NAME_RULE = '最长 32 个字符，不能有空格和 / \\ : * ? " < > |，也不能以 . 结尾'
+
+
+def valid_name(name: str) -> bool:
+    return bool(NAME.fullmatch(name)) and not name.endswith(".")
 
 
 def load_config() -> dict:
@@ -125,10 +131,10 @@ class Accounts:
 
     def visible_networks(self, user: str) -> list[dict]:
         out = []
-        for nid, n in self.networks.items():
-            role = self.role(user, nid)
+        for net in self.networks:
+            role = self.role(user, net)
             if role:
-                out.append({"id": nid, "name": n.get("name") or nid, "role": role})
+                out.append({"name": net, "role": role})
         return out
 
     # ------------------------------------------------------------ login cookies
@@ -156,10 +162,24 @@ class Accounts:
 
     # ------------------------------------------------------------ changes (manage.py)
 
-    def add_network(self, nid: str, name: str) -> str:
+    def network_dir(self, net: str) -> Path:
+        return self.file.parent / "networks" / net
+
+    def add_network(self, net: str) -> str:
         token = new_token()
-        self.networks[nid] = {"name": name or nid, "token_hash": digest(token), "created": time.time()}
+        self.networks[net] = {"token_hash": digest(token), "created": time.time()}
         return token
+
+    def rename_network(self, old: str, new: str) -> None:
+        """Rename a network together with its data folder and everyone's grants."""
+        old_dir, new_dir = self.network_dir(old), self.network_dir(new)
+        if old_dir.exists():
+            old_dir.rename(new_dir)
+        self.networks[new] = self.networks.pop(old)
+        for info in self.users.values():
+            grants = info.get("networks", {})
+            if old in grants:
+                grants[new] = grants.pop(old)
 
     def add_user(self, name: str, admin: bool = False) -> str:
         key = new_key()

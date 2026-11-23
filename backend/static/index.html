@@ -290,7 +290,7 @@ const ago = s => s < 60 ? `${Math.round(s)} 秒前` : s < 3600 ? `${Math.round(s
 // Every api/ call (except api/me) is about one AE network, passed as ?net=.
 const NET_KEY = "aeweb.net";
 let me = null, currentNet = null;
-const role = () => lastState?.role || me?.networks.find(n => n.id === currentNet)?.role || "viewer";
+const role = () => lastState?.role || me?.networks.find(n => n.name === currentNet)?.role || "viewer";
 const canOrder = () => role() !== "viewer";
 const isOwner = () => role() === "owner";
 const withNet = path => path + (path.includes("?") ? "&" : "?") + "net=" + encodeURIComponent(currentNet);
@@ -816,10 +816,10 @@ async function loadMe() {
   $("noNet").hidden = nets.length > 0;
   $("main").hidden = !nets.length;
   $("netSel").hidden = nets.length < 2;
-  $("netSel").innerHTML = nets.map(n => `<option value="${esc(n.id)}">${esc(n.name)}</option>`).join("");
+  $("netSel").innerHTML = nets.map(n => `<option value="${esc(n.name)}">${esc(n.name)}</option>`).join("");
   let want = currentNet;
   if (want == null) try { want = localStorage.getItem(NET_KEY); } catch {}
-  if (!nets.some(n => n.id === want)) want = nets[0]?.id ?? null;
+  if (!nets.some(n => n.name === want)) want = nets[0]?.name ?? null;
   if (want !== currentNet) switchNet(want);
   else if (want) $("netSel").value = want;
 }

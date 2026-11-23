@@ -5,7 +5,7 @@ The OpenComputers program pushes two kinds of data:
   * POST /api/oc/status  small JSON: AE power and crafting CPUs, every few seconds
   * POST /api/oc/items   inventory snapshot as tab-separated text, sent in
                          numbered chunks and swapped in once the last chunk arrives
-The browser reads it back through /api/state and /api/items (with ?net=<id>) after
+The browser reads it back through /api/state and /api/items (with ?net=<name>) after
 logging in with a per-user key. Users and networks live in accounts.py / manage.py.
 
 Item names arrive in the server's language (English). Chinese names come from
@@ -535,11 +535,11 @@ class CpuTracker:
 
 
 class Network:
-    """Everything the backend keeps for one AE network, under <data_dir>/networks/<id>/."""
+    """Everything the backend keeps for one AE network, under <data_dir>/networks/<name>/."""
 
-    def __init__(self, nid: str) -> None:
-        self.id = nid
-        folder = NETWORKS_DIR / nid
+    def __init__(self, name: str) -> None:
+        self.name = name
+        folder = NETWORKS_DIR / name
         self.state = State(folder / "state.json")
         self.state.load()
         self.commands = Commands(folder / "commands.json")
@@ -562,7 +562,7 @@ def migrate_single_network() -> None:
     if not token or token.startswith("CHANGE-ME"):
         return
     ACCOUNTS.data = Accounts.empty()
-    ACCOUNTS.networks["main"] = {"name": "main", "token_hash": digest(token), "created": time.time()}
+    ACCOUNTS.networks["main"] = {"token_hash": digest(token), "created": time.time()}
     folder = NETWORKS_DIR / "main"
     folder.mkdir(parents=True, exist_ok=True)
     for name in ("state.json", "commands.json"):
@@ -571,24 +571,26 @@ def migrate_single_network() -> None:
             old.replace(folder / name)
     ACCOUNTS.save()
     print("Moved the existing AE network to network 'main' (it keeps the oc_token from config.toml).")
-    print("Add yourself with:  uv run python manage.py user add <名字> --admin")
+    print("Rename it with:     uv run python manage.py net rename main <new-name>")
+    print("Add yourself with:  uv run python manage.py user add <your-name> --admin")
 
 
 migrate_single_network()
 ACCOUNTS.refresh()
 if not ACCOUNTS.users:
-    print("No users yet. Add one with:  uv run python manage.py user add <名字> --admin")
+    print("No users yet. Add one with:  uv run python manage.py user add <your-name> --admin")
 
 
-def network(nid: str) -> Network | None:
-    """The live Network for an id in accounts.json (created on first use)."""
+def network(name: str) -> Network | None:
+    """The live Network for a name in accounts.json (created on first use)."""
     ACCOUNTS.refresh()
-    if nid not in ACCOUNTS.networks:
-        _networks.pop(nid, None)
+    for stale in [n for n in _networks if n not in ACCOUNTS.networks]:  # renamed or removed
+        del _networks[stale]
+    if name not in ACCOUNTS.networks:
         return None
-    if nid not in _networks:
-        _networks[nid] = Network(nid)
-    return _networks[nid]
+    if name not in _networks:
+        _networks[name] = Network(name)
+    return _networks[name]
 
 
 # Defaults match the old AE amount box limit (int max, about 2.1g); OC passes it on as a long.
@@ -604,8 +606,8 @@ def require_oc(request: Request) -> Network:
     header = request.headers.get("authorization", "")
     token = header[7:] if header.startswith("Bearer ") else ""
     ACCOUNTS.refresh()
-    nid = ACCOUNTS.network_for_token(token)
-    net = network(nid) if nid else None
+    name = ACCOUNTS.network_for_token(token)
+    net = network(name) if name else None
     if not net:
         raise HTTPException(401, "bad token")
     return net
