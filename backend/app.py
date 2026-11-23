@@ -562,8 +562,9 @@ class CpuTracker:
 
 
 CPU_TRACKER = CpuTracker()
-MAX_ORDER_AMOUNT = int(CFG.get("max_order_amount", 1_000_000))
-MAX_ORDER_FLUID = int(CFG.get("max_order_fluid_amount", 10_000_000))  # L
+# Defaults match the old AE amount box limit (int max, about 2.1g); OC passes it on as a long.
+MAX_ORDER_AMOUNT = int(CFG.get("max_order_amount", 2_147_483_647))
+MAX_ORDER_FLUID = int(CFG.get("max_order_fluid_amount", 2_147_483_647))  # L
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 

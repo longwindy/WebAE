@@ -17,5 +17,5 @@ web_password = "CHANGE-ME-web-password"
 data_dir = "data"
 
 # Largest amount one web order may request: items, and fluids in L (mB).
-max_order_amount = 1000000
-max_order_fluid_amount = 10000000
+max_order_amount = 2147483647
+max_order_fluid_amount = 2147483647
