@@ -1,0 +1,26 @@
+# systemd unit for the WebAE backend. Install with:
+#   cp /opt/webae/deploy/aeweb.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now aeweb
+[Unit]
+Description=WebAE backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aeweb
+Group=aeweb
+WorkingDirectory=/opt/webae/backend
+ExecStart=/opt/webae/backend/.venv/bin/python app.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+# The backend only writes under data/; everything else is read-only for it.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/webae/backend/data
+
+[Install]
+WantedBy=multi-user.target

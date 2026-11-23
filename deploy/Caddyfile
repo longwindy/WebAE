@@ -1,0 +1,9 @@
+# Caddy in front of the backend: gets and renews the HTTPS certificate by itself.
+# Install with:  cp /opt/webae/deploy/Caddyfile /etc/caddy/Caddyfile
+# then replace webae.example.com below with your own domain and run:  systemctl reload caddy
+# The domain's DNS record must point straight at this server (in Cloudflare: "DNS only",
+# grey cloud), or the certificate cannot be issued.
+webae.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8765
+}
