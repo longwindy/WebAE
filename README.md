@@ -1,15 +1,7 @@
-# WebAE：在网页上查看 AE 网络
+# WebAE：在网页上监工你的 AE 网络
 
-游戏内的 OC 电脑定时把 AE 网络的**能量、合成 CPU 状态、库存**上传到后端，你在浏览器里登录查看，也可以给**已经有样板的物品下单合成**、取消 CPU 上的合成任务。
+这是一个专为整合包GTNH设计的系统，游戏内使用OC进行连接。你可以在浏览器中查看你的ae合成情况与库存，也可以下单让你在摸鱼的ae动起来。
 
-```
-OC 电脑（因特网卡 + 适配器接 ME） ──HTTPS──▶ 后端（你的电脑）◀── 浏览器
-```
-
-| 目录 | 内容 |
-|---|---|
-| `backend/` | Python 后端（FastAPI）和网页 |
-| `oc/aeweb.lua` | 游戏内 OC 电脑运行的上传程序 |
 
 ## 一、启动后端（在你的电脑上）
 
@@ -18,14 +10,67 @@ OC 电脑（因特网卡 + 适配器接 ME） ──HTTPS──▶ 后端（你�
    cd D:\oc\ae-web\backend
    copy config.example.toml config.toml
    ```
-2. 编辑 `config.toml`：
-   - `oc_token`：OC 上传用的密钥。用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成一串。
-   - `web_password`：网页登录密码。
+2. 添加 AE 网络和你自己的账号（详见下面的"用户和网络"）：
+   ```powershell
+   uv run python manage.py net add main --name 我的AE        # 打印 OC 令牌，第三步要用
+   uv run python manage.py user add 你的名字 --admin          # 打印登录密钥
+   ```
 3. 启动：
    ```powershell
    uv run python app.py
    ```
-   本机打开 <http://127.0.0.1:8765> 能看到登录页就说明后端正常。数据会保存在 `backend/data/state.json`，重启后不会丢。
+   本机打开 <http://127.0.0.1:8765>，用登录密钥登录。每个网络的数据保存在 `backend/data/networks/<网络id>/`，重启后不会丢。
+
+## 用户和网络
+
+一个后端可以同时接入**多套 AE**（每套叫一个"网络"），也可以让**多个人**使用。
+
+- **网络**：一套 AE 加上接在它上面的一台 OC 电脑。每个网络有自己的 OC 令牌，OC 用它上报，后端就知道是哪个网络。
+- **用户**：一个人一个**登录密钥**，网页登录时只需要输入密钥。登录后 30 天内不用再输。
+- 用户在每个网络里有一个角色：
+
+  | 角色 | 查看 | 下单 | 撤回订单 | 取消 CPU 上的任务 |
+  |---|---|---|---|---|
+  | `viewer` 只读 | ✓ | | | |
+  | `member` 成员 | ✓ | ✓ | 只能撤回自己的 | |
+  | `owner` 所有者 | ✓ | ✓ | 所有人的 | ✓ |
+
+  管理员（`--admin`）在所有网络里都按所有者对待。只有所有者能取消 CPU 任务，因为 CPU 上的任务可能是别人在游戏里下的。
+
+所有管理都在服务器上用 `manage.py` 完成（在 `backend/` 下运行 `uv run python manage.py ...`），**改完不用重启后端**：
+
+```
+net add <id> [--name 名字]       添加网络，打印 OC 令牌
+net list                         列出网络和成员
+net token <id>                   换一个新的 OC 令牌（旧的立即失效）
+net rename <id> <名字>
+net remove <id>                  删除网络（数据文件夹保留）
+
+user add <名字> [--admin]        添加用户，打印登录密钥
+user list
+user reset <名字>                换一个新的密钥，旧密钥和所有已登录的设备立即失效
+user admin <名字> on|off
+user remove <名字>
+
+grant <用户> <网络> owner|member|viewer
+ungrant <用户> <网络>
+```
+
+例子：小明有自己的 AE，同时和小红共用一套公共 AE：
+```
+manage.py net add xiaoming --name 小明的AE      → 把打印的令牌填进小明那台 OC
+manage.py net add public --name 公共AE
+manage.py user add 小明                          → 把打印的密钥发给小明
+manage.py user add 小红
+manage.py grant 小明 xiaoming owner
+manage.py grant 小明 public member
+manage.py grant 小红 public member
+```
+能访问多个网络的用户，网页顶部会出现一个下拉框用来切换。
+
+**令牌和密钥只在生成时显示一次**，后端只保存它们的哈希。弄丢了就用 `net token` / `user reset` 重新生成。账号数据在 `data/accounts.json`。
+
+从旧的单密码版本升级：保留 `config.toml` 里原来的 `oc_token`，第一次启动时它会自动变成网络 `main`，原来的库存和订单也会搬过去，OC 那边不用改。然后用 `user add 你的名字 --admin` 给自己发一个密钥。`web_password` 不再使用。
 
 ## 二、让游戏服务器能访问到后端
 
@@ -67,7 +112,7 @@ edit /home/aeweb.cfg
 ```
 填好两项（编辑器里 Ctrl+S 保存，Ctrl+W 退出）：
 - `BASE_URL`：你的公网地址
-- `TOKEN`：和 `config.toml` 里的 `oc_token` 完全一致
+- `TOKEN`：这个网络的 OC 令牌（`manage.py net add` 打印的那串）
 
 再运行 `aeweb`，正常情况下会打印：
 ```
@@ -155,9 +200,9 @@ NEI 导出的是**物品面板当前显示的列表**，所以导出前要先做
 
 订单会以卡片形式出现在"历史订单"里，状态依次是：排队中 → 已发送 → 计算中 → 合成中 → 完成。卡片显示目标、数量、下单时间，完成的显示耗时（从下单到完成），进行中的显示实时走动的已耗时，失败的显示原因，比如"材料不足"。
 
-后端只保留**最近 10 条已结束的订单**，更早的会从 `data/commands.json` 里删除；进行中的订单不受限制。网页上的"取消 CPU 任务"不算订单，不出现在历史订单里。
+每个网络只保留**最近 10 条已结束的订单**，更早的会从 `data/networks/<网络id>/commands.json` 里删除；进行中的订单不受限制。网页上的"取消 CPU 任务"不算订单，不出现在历史订单里。订单卡片上会显示下单人。
 
-合成中的 CPU 卡片上有**取消任务**按钮，作用和游戏内合成状态界面里的取消一样。
+合成中的 CPU 卡片上有**取消任务**按钮（只有这个网络的所有者能看到），作用和游戏内合成状态界面里的取消一样。
 
 和游戏内的区别：OC 接口**没有"预览合成计划"的功能**。提交后 AE 会直接计算，缺材料就直接失败，不会像游戏里那样先列出缺什么。
 
@@ -207,5 +252,7 @@ NEI 是按**显示名**给图片命名的，所以导入脚本按 CSV 的顺序�
 
 ## 安全
 
-- `oc_token` 写在游戏里那台 OC 电脑上，能打开这台电脑的人都看得到。给电脑上锁，或者放在别人进不去的地方。
-- 网页只有一个密码，**登录后就能下单**。分享给别人之前，至少换一个强密码。多用户和权限控制会在后续版本加入。
+- OC 令牌写在游戏里那台 OC 电脑上，能打开这台电脑的人都看得到。给电脑上锁，或者放在别人进不去的地方。令牌泄露后用 `manage.py net token <id>` 换一个。
+- 拿到 OC 令牌的人可以冒充这个网络上报假数据，也能领走网页下的订单，但碰不到其他网络。
+- 登录密钥让每个人单独发一个，**不要多人共用**，否则订单上分不出是谁下的。有人不再使用时，用 `user remove` 删掉，他所有设备上的登录会立即失效。
+- `data/accounts.json` 里只有令牌和密钥的哈希，但也有签发登录 cookie 用的密钥，不要泄露这个文件。

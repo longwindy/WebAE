@@ -19,10 +19,15 @@
   --act-bg:#1f3a2b;--pend-bg:#3a3420;
 }}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
 header{position:sticky;top:0;z-index:2;background:var(--card);border-bottom:1px solid var(--line)}
 .bar{max-width:1480px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 h1{font-size:17px;margin:0;margin-right:auto}
+#netSel{padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card);max-width:200px}
+.who{color:var(--muted);font-size:13px;white-space:nowrap}
+.nonet{max-width:520px;margin:48px auto;padding:20px;text-align:center;color:var(--muted);
+  background:var(--card);border:1px solid var(--line);border-radius:10px}
 h2{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
 h2 small{font-weight:400;color:var(--muted);font-size:13px}
 main{max-width:1480px;margin:0 auto;padding:16px;display:grid;gap:16px}
@@ -147,9 +152,12 @@ dialog label .preview{float:right;color:var(--fg);font-variant-numeric:tabular-n
   <h1>AE 网络</h1>
   <span id="statusPill" class="pill">等待数据</span>
   <span id="itemsPill" class="pill">库存：无</span>
+  <select id="netSel" title="切换 AE 网络" hidden></select>
+  <span id="whoami" class="who"></span>
   <form method="post" action="logout"><button>退出</button></form>
 </div></header>
-<main>
+<div id="noNet" class="nonet" hidden>你的账号还没有加入任何 AE 网络，请联系管理员授权。</div>
+<main id="main">
   <section>
     <h2>能量</h2>
     <div id="power" class="empty">还没有收到 OC 的上报</div>
@@ -278,15 +286,25 @@ const dur = s => {
 const ago = s => s < 60 ? `${Math.round(s)} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前`
   : `${Math.round(s / 3600)} 小时前`;
 
+// ------------------------------------------------------------ user and network
+// Every api/ call (except api/me) is about one AE network, passed as ?net=.
+const NET_KEY = "aeweb.net";
+let me = null, currentNet = null;
+const role = () => lastState?.role || me?.networks.find(n => n.id === currentNet)?.role || "viewer";
+const canOrder = () => role() !== "viewer";
+const isOwner = () => role() === "owner";
+const withNet = path => path + (path.includes("?") ? "&" : "?") + "net=" + encodeURIComponent(currentNet);
+
 async function api(path) {
-  const res = await fetch(path, {cache: "no-store"});
+  const res = await fetch(withNet(path), {cache: "no-store"});
   if (res.status === 401) { location.href = "login"; throw new Error("login"); }
+  if (res.status === 403) { loadMe(); throw new Error("forbidden"); } // access changed: re-read networks
   if (!res.ok) throw new Error(res.status);
   return res.json();
 }
 
 async function postJson(path, body) {
-  const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+  const res = await fetch(withNet(path), {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body)});
   if (res.status === 401) { location.href = "login"; throw new Error("请重新登录"); }
   const data = await res.json().catch(() => ({}));
@@ -320,9 +338,8 @@ const icon = (ic, cls = "") => ic
 // Left: every CPU. Right: the selected one like the in-game crafting monitor,
 // one cell per item with its stored / crafting / scheduled amounts.
 
-const CPU_KEY = "aeweb.cpu";
+const cpuKey = () => "aeweb.cpu." + currentNet; // remembered per network
 let selectedCpu = null, cpuDetailTimer = null, clockOffset = 0;
-try { selectedCpu = Number(localStorage.getItem(CPU_KEY)) || null; } catch {}
 
 const hms = s => {
   s = Math.max(0, Math.floor(s));
@@ -376,18 +393,18 @@ function cellHtml(r) {
 }
 
 async function loadCpuDetail() {
-  if (selectedCpu == null) return;
-  const index = selectedCpu;
+  if (selectedCpu == null || !currentNet) return;
+  const index = selectedCpu, net = currentNet;
   let d;
   try { d = await api(`api/cpus/${index}?` + new URLSearchParams({q: $("cdQ").value})); } catch { return; }
-  if (index !== selectedCpu) return; // selection changed while loading
+  if (index !== selectedCpu || net !== currentNet) return; // selection changed while loading
   const c = d.cpu;
   $("cdTarget").innerHTML = `<span>${esc(c.name)}</span> · ${targetHtml(c)}`;
   $("cdTime").innerHTML = c.busy ? `已合成 ${sinceSpan(c)}` : "";
   $("cdAge").textContent = !c.busy ? "" : c.detailAt
     ? `详情 ${ago(d.now - c.detailAt)}更新${d.truncated ? " · 列表过长，只展示部分内容" : ""}` : "";
   const cancel = $("cdCancel");
-  cancel.hidden = !c.busy;
+  cancel.hidden = !c.busy || !isOwner(); // only owners may stop a CPU job
   Object.assign(cancel.dataset, {index: c.index, name: c.rawName || "", label: c.name});
   $("cdGrid").innerHTML = d.rows.map(cellHtml).join("");
   const empty = !c.busy ? "这个 CPU 当前空闲" : !c.detailAt ? "等待 OC 读取详情"
@@ -401,7 +418,7 @@ $("cpuList").addEventListener("click", ev => {
   const b = ev.target.closest("[data-cpu]");
   if (!b) return;
   selectedCpu = Number(b.dataset.cpu);
-  try { localStorage.setItem(CPU_KEY, String(selectedCpu)); } catch {}
+  try { localStorage.setItem(cpuKey(), String(selectedCpu)); } catch {}
   $("cdQ").value = "";
   $("cdGrid").innerHTML = "";
   $("cdScroll").scrollTop = 0;
@@ -422,9 +439,12 @@ $("cdCancel").addEventListener("click", async () => {
 });
 
 async function refreshState() {
+  if (!currentNet) return;
+  const net = currentNet;
   let s;
   try { s = await api("api/state"); }
-  catch (e) { if (e.message !== "login") pill($("statusPill"), "后端无响应", "err"); return; }
+  catch (e) { if (!["login", "forbidden"].includes(e.message)) pill($("statusPill"), "后端无响应", "err"); return; }
+  if (net !== currentNet) return; // switched network while loading
   lastState = s;
   clockOffset = s.now - Date.now() / 1000;
   renderOrders(s.orders, s.now);
@@ -459,12 +479,12 @@ try { compact = localStorage.getItem(VIEW_KEY) === "compact"; } catch {}
 function itemTitle(r) {
   return [r.z || r.l, r.z ? r.l : null, `${r.n}${r.k === "i" ? ":" + r.d : ""}`,
     `数量：${exact(r.s)}${r.k === "f" ? " L" : ""}`,
-    r.c ? "点击下单合成" : null]
+    r.c ? (canOrder() ? "点击下单合成" : "可合成（你在这个网络里只能查看）") : null]
     .filter(Boolean).map(s => esc(s)).join("&#10;");
 }
 
 const countText = r => `${num(r.s)}${r.k === "f" ? " L" : ""}`;
-const clickable = r => r.c;
+const clickable = r => r.c && canOrder();
 
 function cardHtml(r, i) {
   // A craftable fluid shows "可合成"; its " L" amount already marks it as a fluid.
@@ -518,9 +538,12 @@ async function loadItems() {
   const [sort, order] = $("sort").value.split(":");
   pageSize = computePageSize();
   offset = Math.floor(offset / pageSize) * pageSize; // keep the page that held the first item
+  if (!currentNet) return;
+  const net = currentNet;
   const qs = new URLSearchParams({q: $("q").value, kind: $("kind").value, sort, order, offset, limit: pageSize});
   let data;
   try { data = await api("api/items?" + qs); } catch { return; }
+  if (net !== currentNet) return;
   total = data.total;
   currentRows = data.rows;
   $("rows").innerHTML = data.rows.map(compact ? slotHtml : cardHtml).join("");
@@ -577,8 +600,9 @@ function renderOrders(orders, now) {
       <span class="name" title="${esc(o.l)}">${esc(o.z || o.l)}</span>
       <span class="pill ${pill}">${label}</span>
       <span class="amt">× ${full.format(o.amount)}${o.k === "f" ? " L" : ""}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}</span>
-      ${o.state === "queued" ? `<button class="small" data-withdraw="${esc(o.id)}">撤回</button>` : "<span></span>"}
-      <div class="meta">${ago(now - o.created)}下单${foot ? " · " + foot : ""}</div>
+      ${o.state === "queued" && (isOwner() || (canOrder() && o.user === me?.user))
+        ? `<button class="small" data-withdraw="${esc(o.id)}">撤回</button>` : "<span></span>"}
+      <div class="meta">${o.user ? esc(o.user) + " · " : ""}${ago(now - o.created)}下单${foot ? " · " + foot : ""}</div>
     </div>`;
   }).join("");
   tickClocks();
@@ -780,9 +804,49 @@ $("sort").addEventListener("change", () => {
 $("prev").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); resetInvScroll = true; loadItems(); });
 $("next").addEventListener("click", () => { offset += pageSize; resetInvScroll = true; loadItems(); });
 
-refreshState();
-loadItems();
+// Reads who is logged in and their networks, then opens the remembered (or first) network.
+async function loadMe() {
+  let res;
+  try { res = await fetch("api/me", {cache: "no-store"}); } catch { return; }
+  if (res.status === 401) { location.href = "login"; return; }
+  if (!res.ok) return;
+  me = await res.json();
+  $("whoami").textContent = me.user + (me.admin ? "（管理员）" : "");
+  const nets = me.networks;
+  $("noNet").hidden = nets.length > 0;
+  $("main").hidden = !nets.length;
+  $("netSel").hidden = nets.length < 2;
+  $("netSel").innerHTML = nets.map(n => `<option value="${esc(n.id)}">${esc(n.name)}</option>`).join("");
+  let want = currentNet;
+  if (want == null) try { want = localStorage.getItem(NET_KEY); } catch {}
+  if (!nets.some(n => n.id === want)) want = nets[0]?.id ?? null;
+  if (want !== currentNet) switchNet(want);
+  else if (want) $("netSel").value = want;
+}
+
+function switchNet(id) {
+  currentNet = id;
+  if (id) { $("netSel").value = id; try { localStorage.setItem(NET_KEY, id); } catch {} }
+  // forget everything shown for the previous network
+  lastState = null; lastItemsUpdate = null; offset = 0; resetInvScroll = true;
+  currentRows = []; selectedCpu = null;
+  try { selectedCpu = Number(localStorage.getItem(cpuKey())) || null; } catch {}
+  pill($("statusPill"), "等待数据", ""); pill($("itemsPill"), "库存：无", "");
+  $("power").className = "empty"; $("power").textContent = "还没有收到 OC 的上报";
+  $("cpuSummary").textContent = ""; $("itemsMeta").textContent = "";
+  $("cpuList").innerHTML = '<div class="empty">没有合成 CPU</div>';
+  $("cdTarget").innerHTML = $("cdTime").innerHTML = $("cdAge").textContent = $("cdGrid").innerHTML = "";
+  $("cdCancel").hidden = true; $("cdQ").value = "";
+  $("cdEmpty").textContent = "选择左侧的 CPU 查看详情"; $("cdEmpty").hidden = false;
+  renderOrders([], 0);
+  $("rows").innerHTML = ""; $("pageInfo").textContent = "";
+  if (id) { refreshState(); loadItems(); }
+}
+$("netSel").addEventListener("change", () => switchNet($("netSel").value));
+
+loadMe();
 setInterval(refreshState, 5000);
+setInterval(loadMe, 60000); // picks up networks granted or removed meanwhile
 </script>
 </body>
 </html>

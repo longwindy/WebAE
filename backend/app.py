@@ -1,10 +1,12 @@
 """AE web view backend.
 
+Several AE networks can report here, each through its own OC computer and token.
 The OpenComputers program pushes two kinds of data:
   * POST /api/oc/status  small JSON: AE power and crafting CPUs, every few seconds
   * POST /api/oc/items   inventory snapshot as tab-separated text, sent in
                          numbered chunks and swapped in once the last chunk arrives
-The browser reads it back through /api/state and /api/items after logging in.
+The browser reads it back through /api/state and /api/items (with ?net=<id>) after
+logging in with a per-user key. Users and networks live in accounts.py / manage.py.
 
 Item names arrive in the server's language (English). Chinese names come from
 NEI item panel dumps placed in <data_dir>/i18n (see Translations).
@@ -13,14 +15,10 @@ NEI item panel dumps placed in <data_dir>/i18n (see Translations).
 import asyncio
 import csv
 import hashlib
-import hmac
 import json
-import os
 import re
 import secrets
-import sys
 import time
-import tomllib
 from pathlib import Path
 
 import pypinyin
@@ -30,35 +28,15 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTe
                                RedirectResponse)
 from pydantic import BaseModel, Field
 
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = Path(os.environ.get("AEWEB_CONFIG", BASE_DIR / "config.toml"))
+from accounts import BASE_DIR, Accounts, digest, load_config, role_at_least
+
 MAX_BODY = 4 * 1024 * 1024
 PENDING_TTL = 600
 COOKIE = "aeweb_session"
 
-
-def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        sys.exit(f"Config not found: {CONFIG_PATH} (copy config.example.toml to config.toml)")
-    with CONFIG_PATH.open("rb") as f:
-        cfg = tomllib.load(f)
-    for key in ("oc_token", "web_password"):
-        value = str(cfg.get(key, ""))
-        if not value or value.startswith("CHANGE-ME"):
-            sys.exit(f"Set '{key}' in {CONFIG_PATH} before starting")
-    cfg.setdefault("host", "127.0.0.1")
-    cfg.setdefault("port", 8765)
-    data_dir = Path(cfg.get("data_dir", "data"))
-    cfg["data_dir"] = data_dir if data_dir.is_absolute() else BASE_DIR / data_dir
-    return cfg
-
-
 CFG = load_config()
-SESSION_VALUE = hmac.new(
-    CFG["web_password"].encode(), b"aeweb-session-v1", hashlib.sha256
-).hexdigest()
-STATE_FILE = CFG["data_dir"] / "state.json"
 I18N_DIR = CFG["data_dir"] / "i18n"
+NETWORKS_DIR = CFG["data_dir"] / "networks"
 
 
 class Translations:
@@ -347,7 +325,8 @@ def index_rows(rows: list[dict]) -> None:
 
 
 class State:
-    def __init__(self) -> None:
+    def __init__(self, file: Path) -> None:
+        self.file = file
         self.status: dict | None = None
         self.items: list[dict] = []
         self.items_meta: dict | None = None
@@ -363,28 +342,24 @@ class State:
             self.indexed_version = version
 
     def load(self) -> None:
-        if not STATE_FILE.exists():
+        if not self.file.exists():
             return
         try:
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(self.file.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            print(f"Ignoring unreadable {STATE_FILE}: {exc}")
+            print(f"Ignoring unreadable {self.file}: {exc}")
             return
         self.status = data.get("status")
         self.items = data.get("items", [])
         self.items_meta = data.get("items_meta")
 
     def save(self) -> None:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.file.parent.mkdir(parents=True, exist_ok=True)
         items = [{k: v for k, v in row.items() if not k.startswith("_")} for row in self.items]
         payload = {"status": self.status, "items": items, "items_meta": self.items_meta}
-        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp = self.file.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(STATE_FILE)
-
-
-STATE = State()
-STATE.load()
+        tmp.replace(self.file)
 
 
 class Commands:
@@ -397,7 +372,6 @@ class Commands:
     before acting on it, so a re-sent command never runs twice.
     """
 
-    FILE = CFG["data_dir"] / "commands.json"
     RESEND_AFTER = 30
     EXPIRE_AFTER = 300
     LOST_AFTER = 60
@@ -405,7 +379,8 @@ class Commands:
     KEEP_OTHER = 20   # finished CPU-cancel commands, kept only for bookkeeping
     TERMINAL = {"done", "failed", "canceled", "expired", "lost", "error"}
 
-    def __init__(self) -> None:
+    def __init__(self, file: Path) -> None:
+        self.FILE = file
         self.items: list[dict] = []
         if self.FILE.exists():
             try:
@@ -501,8 +476,6 @@ class Commands:
         return "\t".join(clean(f) for f in fields)
 
 
-COMMANDS = Commands()
-
 
 class CpuTracker:
     """Per busy CPU: when the job started, its target and the latest details.
@@ -561,7 +534,63 @@ class CpuTracker:
         return self.jobs.get(self.key(cpu)) if cpu.get("busy") else None
 
 
-CPU_TRACKER = CpuTracker()
+class Network:
+    """Everything the backend keeps for one AE network, under <data_dir>/networks/<id>/."""
+
+    def __init__(self, nid: str) -> None:
+        self.id = nid
+        folder = NETWORKS_DIR / nid
+        self.state = State(folder / "state.json")
+        self.state.load()
+        self.commands = Commands(folder / "commands.json")
+        self.cpus = CpuTracker()
+
+
+ACCOUNTS = Accounts(CFG["data_dir"])
+_networks: dict[str, Network] = {}
+
+
+def migrate_single_network() -> None:
+    """First start after the multi-user update: the old single network becomes "main".
+
+    Its OC keeps working because the network takes over oc_token from config.toml,
+    and the old state.json / commands.json move into the network's folder.
+    """
+    if ACCOUNTS.exists():
+        return
+    token = str(CFG.get("oc_token", ""))
+    if not token or token.startswith("CHANGE-ME"):
+        return
+    ACCOUNTS.data = Accounts.empty()
+    ACCOUNTS.networks["main"] = {"name": "main", "token_hash": digest(token), "created": time.time()}
+    folder = NETWORKS_DIR / "main"
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("state.json", "commands.json"):
+        old = CFG["data_dir"] / name
+        if old.exists() and not (folder / name).exists():
+            old.replace(folder / name)
+    ACCOUNTS.save()
+    print("Moved the existing AE network to network 'main' (it keeps the oc_token from config.toml).")
+    print("Add yourself with:  uv run python manage.py user add <名字> --admin")
+
+
+migrate_single_network()
+ACCOUNTS.refresh()
+if not ACCOUNTS.users:
+    print("No users yet. Add one with:  uv run python manage.py user add <名字> --admin")
+
+
+def network(nid: str) -> Network | None:
+    """The live Network for an id in accounts.json (created on first use)."""
+    ACCOUNTS.refresh()
+    if nid not in ACCOUNTS.networks:
+        _networks.pop(nid, None)
+        return None
+    if nid not in _networks:
+        _networks[nid] = Network(nid)
+    return _networks[nid]
+
+
 # Defaults match the old AE amount box limit (int max, about 2.1g); OC passes it on as a long.
 MAX_ORDER_AMOUNT = int(CFG.get("max_order_amount", 2_147_483_647))
 MAX_ORDER_FLUID = int(CFG.get("max_order_fluid_amount", 2_147_483_647))  # L
@@ -570,20 +599,40 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 # ---------------------------------------------------------------- auth
 
-def require_oc(request: Request) -> None:
+def require_oc(request: Request) -> Network:
+    """The network whose OC token the request carries."""
     header = request.headers.get("authorization", "")
-    expected = "Bearer " + CFG["oc_token"]
-    if not hmac.compare_digest(header.encode(), expected.encode()):
+    token = header[7:] if header.startswith("Bearer ") else ""
+    ACCOUNTS.refresh()
+    nid = ACCOUNTS.network_for_token(token)
+    net = network(nid) if nid else None
+    if not net:
         raise HTTPException(401, "bad token")
+    return net
 
 
-def is_logged_in(request: Request) -> bool:
-    return hmac.compare_digest(request.cookies.get(COOKIE, ""), SESSION_VALUE)
+def current_user(request: Request) -> str | None:
+    ACCOUNTS.refresh()
+    return ACCOUNTS.user_for_session(request.cookies.get(COOKIE, ""))
 
 
-def require_web(request: Request) -> None:
-    if not is_logged_in(request):
+class Access:
+    def __init__(self, user: str, net: Network, role: str) -> None:
+        self.user, self.net, self.role = user, net, role
+
+
+def require_web(request: Request, net: str, need: str = "viewer") -> Access:
+    """The logged-in user and the network they asked for, if their role there is at least `need`."""
+    user = current_user(request)
+    if not user:
         raise HTTPException(401, "login required")
+    role = ACCOUNTS.role(user, net)
+    live = network(net) if role else None
+    if not live:
+        raise HTTPException(403, "没有这个网络的访问权限")
+    if not role_at_least(role, need):
+        raise HTTPException(403, "你在这个网络里没有这个操作的权限")
+    return Access(user, live, role)
 
 
 async def read_body(request: Request) -> bytes:
@@ -600,19 +649,19 @@ async def read_body(request: Request) -> bytes:
 
 @app.post("/api/oc/status")
 async def oc_status(request: Request):
-    require_oc(request)
+    net = require_oc(request)
     try:
         data = json.loads(await read_body(request))
     except ValueError:
         raise HTTPException(400, "invalid json")
     if not isinstance(data, dict):
         raise HTTPException(400, "expected object")
-    COMMANDS.apply_report(data.pop("updates", []), data.pop("tracking", []))
+    net.commands.apply_report(data.pop("updates", []), data.pop("tracking", []))
     data["received"] = time.time()
-    CPU_TRACKER.update(data.get("cpus"), data["received"])  # moves CPU details into the tracker
-    STATE.status = data
+    net.cpus.update(data.get("cpus"), data["received"])  # moves CPU details into the tracker
+    net.state.status = data
     # Pending commands ride back on the response, one per line.
-    lines = [Commands.wire(c) for c in COMMANDS.to_deliver()]
+    lines = [Commands.wire(c) for c in net.commands.to_deliver()]
     return PlainTextResponse("".join(line + "\n" for line in lines))
 
 
@@ -643,20 +692,20 @@ def parse_rows(text: str) -> list[dict]:
 @app.post("/api/oc/items")
 async def oc_items(request: Request, snap: str, seq: int, final: int = 0,
                    count: int = -1, scan: float = 0.0):
-    require_oc(request)
+    state = require_oc(request).state
     body = await read_body(request)
-    digest = hashlib.sha1(body).hexdigest()
+    chunk_hash = hashlib.sha1(body).hexdigest()
     now = time.time()
-    pending = STATE.pending
+    pending = state.pending
     if pending and now - pending["started"] > PENDING_TTL:
-        pending = STATE.pending = None
+        pending = state.pending = None
 
     if seq == 0:
-        pending = STATE.pending = {"snap": snap, "rows": [], "next": 0,
+        pending = state.pending = {"snap": snap, "rows": [], "next": 0,
                                    "started": now, "last": None}
     if not pending or pending["snap"] != snap:
         return JSONResponse({"ok": False, "error": "unknown_snapshot"}, status_code=409)
-    if seq == pending["next"] - 1 and pending["last"] == digest:
+    if seq == pending["next"] - 1 and pending["last"] == chunk_hash:
         return {"ok": True, "duplicate": True}
     if seq != pending["next"]:
         return JSONResponse({"ok": False, "error": "out_of_order",
@@ -664,23 +713,23 @@ async def oc_items(request: Request, snap: str, seq: int, final: int = 0,
 
     pending["rows"].extend(parse_rows(body.decode("utf-8", errors="replace")))
     pending["next"] += 1
-    pending["last"] = digest
+    pending["last"] = chunk_hash
 
     if final:
         rows = pending["rows"]
-        STATE.pending = None
+        state.pending = None
         if count >= 0 and count != len(rows):
             return JSONResponse({"ok": False, "error": "count_mismatch",
                                  "got": len(rows)}, status_code=409)
-        STATE.items = rows
-        STATE.indexed_version = -1
-        STATE.items_meta = {
+        state.items = rows
+        state.indexed_version = -1
+        state.items_meta = {
             "updated": now,
             "items": sum(1 for r in rows if r["k"] == "i"),
             "fluids": sum(1 for r in rows if r["k"] == "f"),
             "scan_seconds": scan,
         }
-        await asyncio.to_thread(STATE.save)
+        await asyncio.to_thread(state.save)
     return {"ok": True}
 
 
@@ -696,8 +745,10 @@ form{background:var(--card);border:1px solid var(--line);border-radius:10px;padd
 h1{font-size:18px;margin:0 0 16px}input,button{width:100%;box-sizing:border-box;font:inherit;padding:9px 11px;border-radius:7px}
 input{border:1px solid var(--line);background:transparent;color:inherit;margin-bottom:12px}
 button{border:0;background:var(--accent);color:#fff;cursor:pointer}.err{color:var(--err);font-size:13px;margin:-4px 0 10px}
+.hint{color:var(--muted);font-size:12px;margin:12px 0 0}
 </style></head><body><form method="post" action="login"><h1>AE 网络</h1>{error}
-<input type="password" name="password" placeholder="密码" autofocus required><button>登录</button></form></body></html>"""
+<input type="password" name="key" placeholder="登录密钥" autocomplete="current-password" autofocus required>
+<button>登录</button><p class="hint">密钥由管理员发放，登录后 30 天内不用再输入。</p></form></body></html>"""
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -706,13 +757,15 @@ async def login_page():
 
 
 @app.post("/login")
-async def login(request: Request, password: str = Form(...)):
-    if not hmac.compare_digest(password.encode(), CFG["web_password"].encode()):
+async def login(request: Request, key: str = Form(...)):
+    ACCOUNTS.refresh()
+    user = ACCOUNTS.user_for_key(key)
+    if not user:
         await asyncio.sleep(1.0)
-        return HTMLResponse(LOGIN_PAGE.replace("{error}", '<p class="err">密码错误</p>'), 401)
+        return HTMLResponse(LOGIN_PAGE.replace("{error}", '<p class="err">密钥无效</p>'), 401)
     response = RedirectResponse("./", status_code=303)
     secure = request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https"
-    response.set_cookie(COOKIE, SESSION_VALUE, max_age=30 * 86400, httponly=True,
+    response.set_cookie(COOKIE, ACCOUNTS.session_for(user), max_age=30 * 86400, httponly=True,
                         samesite="lax", secure=secure)
     return response
 
@@ -726,10 +779,20 @@ async def logout():
 
 @app.get("/")
 async def index(request: Request):
-    if not is_logged_in(request):
+    if not current_user(request):
         return RedirectResponse("login", status_code=303)
     return FileResponse(BASE_DIR / "static" / "index.html",
                         headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/me")
+async def api_me(request: Request):
+    """Who is logged in and which networks they can open."""
+    user = current_user(request)
+    if not user:
+        raise HTTPException(401, "login required")
+    return {"user": user, "admin": bool(ACCOUNTS.users[user].get("admin")),
+            "networks": ACCOUNTS.visible_networks(user)}
 
 
 def translate_item(item):
@@ -740,9 +803,9 @@ def translate_item(item):
     return {**item, "z": zh, "ic": ICONS.lookup("i", n, d, l, zh)}
 
 
-def cpu_summary(cpu: dict) -> dict:
+def cpu_summary(net: Network, cpu: dict) -> dict:
     """CPU list entry: static info plus, when busy, target, start time and detail age."""
-    job = CPU_TRACKER.job(cpu)
+    job = net.cpus.job(cpu)
     out = dict(cpu)
     if job:
         detail = job["detail"] or {}
@@ -770,44 +833,47 @@ def cpu_rows(detail: dict) -> list[dict]:
     return out
 
 
-def translated_status(status: dict | None) -> dict | None:
+def translated_status(net: Network) -> dict | None:
+    status = net.state.status
     if not status:
         return status
-    return {**status, "cpus": [cpu_summary(c) for c in status.get("cpus") or []]}
+    return {**status, "cpus": [cpu_summary(net, c) for c in status.get("cpus") or []]}
 
 
 @app.get("/api/state")
-async def api_state(request: Request):
-    require_web(request)
-    STATE.ensure_indexed()
+async def api_state(request: Request, net: str):
+    acc = require_web(request, net)
+    state = acc.net.state
+    state.ensure_indexed()
     orders = []
-    for c in reversed(COMMANDS.items):
+    for c in reversed(acc.net.commands.items):
         if c["type"] != "craft":
             continue
         kind = c.get("k", "i")
         zh = TR.lookup(kind, c["n"], c["d"], c["l"])
         icon = ICONS.lookup(kind, c["n"], c["d"], c["l"], zh)
         orders.append({**c, "z": zh, "ic": icon})
-    return {"now": time.time(), "status": translated_status(STATE.status),
-            "items_meta": STATE.items_meta, "i18n": {**TR.info, "version": TR.version},
+    return {"now": time.time(), "user": acc.user, "role": acc.role,
+            "status": translated_status(acc.net),
+            "items_meta": state.items_meta, "i18n": {**TR.info, "version": TR.version},
             "orders": orders, "max_order": MAX_ORDER_AMOUNT, "max_order_fluid": MAX_ORDER_FLUID}
 
 
 @app.get("/api/cpus/{index}")
-async def api_cpu(request: Request, index: int, q: str = ""):
+async def api_cpu(request: Request, net: str, index: int, q: str = ""):
     """One CPU with its merged stored/active/pending rows, optionally searched."""
-    require_web(request)
-    STATE.ensure_indexed()
-    cpu = next((c for c in (STATE.status or {}).get("cpus") or [] if c.get("index") == index), None)
+    acc = require_web(request, net)
+    acc.net.state.ensure_indexed()
+    cpu = next((c for c in (acc.net.state.status or {}).get("cpus") or [] if c.get("index") == index), None)
     if not cpu:
         raise HTTPException(404, "没有这个 CPU")
-    job = CPU_TRACKER.job(cpu)
+    job = acc.net.cpus.job(cpu)
     rows = cpu_rows(job["detail"]) if job and job["detail"] else []
     total = len(rows)
     terms = q.lower().split()
     if terms:
         rows = [r for r in rows if all(term_matches(t, r) for t in terms)]
-    return {"now": time.time(), "cpu": cpu_summary(cpu), "total": total,
+    return {"now": time.time(), "cpu": cpu_summary(acc.net, cpu), "total": total,
             "truncated": bool(job and (job["detail"] or {}).get("truncated")),
             "rows": [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]}
 
@@ -826,61 +892,65 @@ class CpuCancelRequest(BaseModel):
     name: str = ""
 
 
-def require_oc_online() -> None:
-    received = (STATE.status or {}).get("received", 0)
+def require_oc_online(net: Network) -> None:
+    received = (net.state.status or {}).get("received", 0)
     if time.time() - received > 60:
         raise HTTPException(409, "OC 程序超过 1 分钟没有上报，指令不会被执行，请先检查游戏内的 OC 电脑")
 
 
 @app.post("/api/orders")
-async def create_order(request: Request, order: OrderRequest):
-    require_web(request)
-    require_oc_online()
+async def create_order(request: Request, net: str, order: OrderRequest):
+    acc = require_web(request, net, "member")
+    require_oc_online(acc.net)
     limit = MAX_ORDER_FLUID if order.k == "f" else MAX_ORDER_AMOUNT
     if order.amount > limit:
         raise HTTPException(400, f"数量超过上限 {limit}")
-    item = next((r for r in STATE.items if r["k"] == order.k and r["c"] and r["n"] == order.n
+    item = next((r for r in acc.net.state.items if r["k"] == order.k and r["c"] and r["n"] == order.n
                  and r["d"] == order.d and r["l"] == order.l), None)
     if not item:
         raise HTTPException(400, "这个物品没有可用的合成样板")
-    cpus = (STATE.status or {}).get("cpus") or []
+    cpus = (acc.net.state.status or {}).get("cpus") or []
     if order.cpu and not any(c.get("rawName") == order.cpu for c in cpus):
         raise HTTPException(400, "找不到这个合成 CPU")
-    cmd = COMMANDS.add(type="craft", k=order.k, n=order.n, d=order.d, l=order.l,
-                       amount=order.amount, cpu=order.cpu)
+    cmd = acc.net.commands.add(type="craft", k=order.k, n=order.n, d=order.d, l=order.l,
+                               amount=order.amount, cpu=order.cpu, user=acc.user)
     return {"ok": True, "id": cmd["id"]}
 
 
 @app.post("/api/orders/{cmd_id}/cancel")
-async def cancel_order(request: Request, cmd_id: str):
-    require_web(request)
-    cmd = COMMANDS.get(cmd_id)
+async def cancel_order(request: Request, net: str, cmd_id: str):
+    acc = require_web(request, net, "member")
+    commands = acc.net.commands
+    cmd = commands.get(cmd_id)
     if not cmd or cmd["state"] != "queued":
         raise HTTPException(409, "只能撤销还没被 OC 领取的指令")
-    COMMANDS.set_state(cmd, "canceled", "withdrawn before delivery")
-    COMMANDS.save()
+    if acc.role != "owner" and cmd.get("user") != acc.user:
+        raise HTTPException(403, "只能撤回自己下的订单")
+    commands.set_state(cmd, "canceled", "withdrawn before delivery")
+    commands.save()
     return {"ok": True}
 
 
 @app.post("/api/cpus/cancel")
-async def cancel_cpu(request: Request, req: CpuCancelRequest):
-    require_web(request)
-    require_oc_online()
-    cpus = (STATE.status or {}).get("cpus") or []
+async def cancel_cpu(request: Request, net: str, req: CpuCancelRequest):
+    # Owners only: a CPU job may have been started in game by someone else.
+    acc = require_web(request, net, "owner")
+    require_oc_online(acc.net)
+    cpus = (acc.net.state.status or {}).get("cpus") or []
     cpu = next((c for c in cpus if c.get("index") == req.index), None)
     if not cpu or (cpu.get("rawName") or "") != req.name or not cpu.get("busy"):
         raise HTTPException(409, "CPU 状态已变化，请刷新后再试")
-    cmd = COMMANDS.add(type="cancel_cpu", index=req.index, cpu=req.name, n="", d=0,
-                       l=cpu.get("name", ""), amount=0)
+    cmd = acc.net.commands.add(type="cancel_cpu", index=req.index, cpu=req.name, n="", d=0,
+                               l=cpu.get("name", ""), amount=0, user=acc.user)
     return {"ok": True, "id": cmd["id"]}
 
 
 @app.get("/api/items")
-async def api_items(request: Request, q: str = "", kind: str = "all", sort: str = "size",
+async def api_items(request: Request, net: str, q: str = "", kind: str = "all", sort: str = "size",
                     order: str = "desc", offset: int = 0, limit: int = 100):
-    require_web(request)
-    STATE.ensure_indexed()
-    rows = STATE.items
+    state = require_web(request, net).net.state
+    state.ensure_indexed()
+    rows = state.items
     if kind in ("i", "f"):
         rows = [r for r in rows if r["k"] == kind]
     if kind == "c":

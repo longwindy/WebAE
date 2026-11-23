@@ -6,14 +6,15 @@
 host = "127.0.0.1"
 port = 8765
 
-# Shared secret between the OC program and the backend.
-# Generate one with:  python -c "import secrets; print(secrets.token_urlsafe(32))"
-oc_token = "CHANGE-ME-oc-token"
+# AE networks (each with its own OC token) and users (each with a login key)
+# are not set here: manage them with  uv run python manage.py --help
+# They are stored in <data_dir>/accounts.json.
+#
+# Upgrading from the single-password version: keep your old oc_token line. On the
+# first start it becomes network "main" so that OC keeps working; after that it
+# is no longer read and can be deleted. web_password is no longer used.
 
-# Password for the web page.
-web_password = "CHANGE-ME-web-password"
-
-# Where the last received data is kept so it survives a restart.
+# Where users, networks and the last received data are kept.
 data_dir = "data"
 
 # Largest amount one web order may request: items, and fluids in L (mB).
