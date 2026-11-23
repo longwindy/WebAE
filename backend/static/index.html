@@ -163,7 +163,7 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
           <span class="time" id="cdTime"></span>
           <span class="meta" id="cdAge"></span>
           <span class="spacer"></span>
-          <input id="cdQ" type="search" placeholder="搜索 CPU 内物品（支持拼音）">
+          <input id="cdQ" type="search" placeholder="">
           <button type="button" class="small danger" id="cdCancel" hidden>取消任务</button>
         </div>
         <div id="cdScroll" class="cdscroll">
@@ -180,7 +180,7 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
   <section>
     <h2>库存 <small id="itemsMeta"></small></h2>
     <div class="tools">
-      <input id="q" type="search" placeholder="搜索中文、拼音（全拼/首字母，如 tieding、td）、英文名或注册名，空格分隔多个关键词">
+      <input id="q" type="search" placeholder="搜索库存...">
       <select id="kind">
         <option value="all">全部</option><option value="i">物品</option>
         <option value="f">流体</option><option value="c">可合成</option>
@@ -358,7 +358,7 @@ function renderCpuList(cpus) {
     <button type="button" class="cpuitem${c.busy ? " busy" : ""}${c.index === selectedCpu ? " sel" : ""}" data-cpu="${c.index}">
       <span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>
       ${c.busy && c.final ? `<span class="tgt">${icon(c.final.ic, "s")}× ${num(c.final.s)}</span>` : "<span></span>"}
-      <span class="meta">${bytes(c.storage)} · 协处理器 ${c.coprocessors} · ${c.busy ? sinceSpan(c) : "空闲"}</span>
+      <span class="meta">${bytes(c.storage)} · 并行处理单元 ${c.coprocessors} · ${c.busy ? sinceSpan(c) : "空闲"}</span>
     </button>`).join("") : `<div class="empty">没有合成 CPU</div>`;
   tickClocks();
 }
@@ -383,12 +383,12 @@ async function loadCpuDetail() {
   $("cdTarget").innerHTML = `<span>${esc(c.name)}</span> · ${targetHtml(c)}`;
   $("cdTime").innerHTML = c.busy ? `已合成 ${sinceSpan(c)}` : "";
   $("cdAge").textContent = !c.busy ? "" : c.detailAt
-    ? `详情 ${ago(d.now - c.detailAt)}更新${d.truncated ? " · 列表过长，只显示一部分" : ""}` : "";
+    ? `详情 ${ago(d.now - c.detailAt)}更新${d.truncated ? " · 列表过长，只展示部分内容" : ""}` : "";
   const cancel = $("cdCancel");
   cancel.hidden = !c.busy;
   Object.assign(cancel.dataset, {index: c.index, name: c.rawName || "", label: c.name});
   $("cdGrid").innerHTML = d.rows.map(cellHtml).join("");
-  const empty = !c.busy ? "这个 CPU 当前空闲" : !c.detailAt ? "等待 OC 读取详情（CPU 很多时会轮流刷新）"
+  const empty = !c.busy ? "这个 CPU 当前空闲" : !c.detailAt ? "等待 OC 读取详情"
     : !d.rows.length ? (d.total ? "没有匹配的物品" : "CPU 里没有物品") : "";
   $("cdEmpty").textContent = empty;
   $("cdEmpty").hidden = !empty;
@@ -549,7 +549,7 @@ const REASONS = [
   [/already handled/i, "这条指令已经执行过"],
 ];
 const reasonText = (o) => {
-  if (o.state === "expired") return "超过 5 分钟没被 OC 领取，已作废";
+  if (o.state === "expired") return "超过 5 分钟未被 OC 领取，已作废";
   const hit = REASONS.find(([re]) => re.test(o.msg || ""));
   return hit ? hit[1] : (o.msg || "");
 };
@@ -610,8 +610,11 @@ function openOrder(row) {
 }
 
 document.querySelectorAll(".steps button").forEach(b => b.addEventListener("click", () => {
-  const v = (parseInt($("odAmount").value, 10) || 0) + parseInt(b.dataset.step, 10);
-  $("odAmount").value = Math.max(1, v);
+  // Same as AE2 GuiAmount.addAmount: from 1, a step above +1 counts from 0 (1 → +1000 = 1000).
+  const step = parseInt(b.dataset.step, 10);
+  let v = Math.max(0, parseInt($("odAmount").value, 10) || 0);
+  if (v === 1 && step > 1) v = 0;
+  $("odAmount").value = Math.max(1, v + step);
 }));
 $("odCancel").addEventListener("click", () => $("orderDialog").close());
 $("orderForm").addEventListener("submit", async (ev) => {
