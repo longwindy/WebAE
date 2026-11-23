@@ -450,6 +450,11 @@ local function runCommands(text)
 end
 
 -- isComputing/hasFailed/isCanceled/isDone each cost a tick, so ask only what is needed.
+-- Ask isDone/isCanceled first: they read the AE crafting link directly. hasFailed is
+-- unreliable once the job runs, because OC's CraftingStatus.save() (every world save)
+-- sets failed = "link missing or not done" with the default reason "no link", so a
+-- running job looks failed after the next autosave. A real submit failure always
+-- comes before the job starts crafting and carries "request failed (...)".
 local function pollTrackers()
   for i = #trackers, 1, -1 do
     local t, final = trackers[i], nil
@@ -457,16 +462,19 @@ local function pollTrackers()
     if not ok then
       final = { "lost", tostring(computing) }
     elseif not computing then
-      local failed, reason = t.status.hasFailed()
-      if failed then
-        final = { "failed", reason }
+      if t.status.isDone() then
+        final = { "done" }
       elseif t.status.isCanceled() then
         final = { "canceled" }
-      elseif t.status.isDone() then
-        final = { "done" }
-      elseif t.state ~= "crafting" then
-        t.state = "crafting"
-        report(t.id, "crafting")
+      else
+        local failed, reason = false, nil
+        if t.state ~= "crafting" then failed, reason = t.status.hasFailed() end
+        if failed and tostring(reason):find("request failed", 1, true) then
+          final = { "failed", reason }
+        elseif t.state ~= "crafting" then
+          t.state = "crafting"
+          report(t.id, "crafting")
+        end
       end
     end
     if final then
