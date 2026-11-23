@@ -9,7 +9,10 @@
   --bg:#f4f5f7;--card:#fff;--fg:#1d2330;--muted:#6b7280;--line:#e1e4ea;--soft:#f0f2f5;
   --accent:#2f6fde;--ok:#1f8a5b;--warn:#b7791f;--err:#c2412d;--bar:#2f6fde;
   --act-bg:#e2f1e4;--pend-bg:#f6f0d6;
+  /* tallest a scrolling panel (CPU list/detail, inventory) gets: about one screen */
+  --pane-h:max(320px, calc(100vh - 200px));
 }
+@supports (height:100dvh){:root{--pane-h:max(320px, calc(100dvh - 200px))}}
 @media (prefers-color-scheme:dark){:root{
   --bg:#14171c;--card:#1d2128;--fg:#e6e8eb;--muted:#9aa1ad;--line:#30353f;--soft:#252a33;
   --accent:#6b9cf0;--ok:#4cc38a;--warn:#e0a84a;--err:#ef7d68;--bar:#6b9cf0;
@@ -36,7 +39,7 @@ button:disabled{opacity:.45;cursor:default}
 .meter{height:8px;background:var(--soft);border-radius:4px;overflow:hidden;margin:4px 0 14px}
 .meter i{display:block;height:100%;background:var(--bar)}
 .cpuwrap{display:grid;grid-template-columns:250px minmax(0,1fr);gap:12px;align-items:start}
-.cpulist{display:flex;flex-direction:column;gap:6px;max-height:680px;overflow:auto}
+.cpulist{display:flex;flex-direction:column;gap:6px;max-height:var(--pane-h);overflow:auto}
 .cpuitem{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;align-items:center;text-align:left;
   width:100%;padding:7px 9px;border:1px solid var(--line);border-left-width:3px;border-radius:8px;background:var(--card)}
 .cpuitem.busy{border-left-color:var(--ok)}
@@ -44,17 +47,21 @@ button:disabled{opacity:.45;cursor:default}
 .cpuitem .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cpuitem .tgt{display:inline-flex;gap:4px;align-items:center;font-size:12px;font-variant-numeric:tabular-nums}
 .cpuitem .meta{grid-column:1 / -1;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
-.cpudetail{min-width:0;border:1px solid var(--line);border-radius:8px;padding:10px}
-.cdhead{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-bottom:10px}
+/* at most one screen tall: the header stays put and the cells scroll below it */
+.cpudetail{min-width:0;border:1px solid var(--line);border-radius:8px;padding:10px;
+  display:flex;flex-direction:column;max-height:var(--pane-h)}
+.cdscroll{flex:0 1 auto;min-height:0;overflow-y:auto;scrollbar-gutter:stable;padding-right:4px}
+.cdhead{flex:none;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin-bottom:10px}
 .cdhead .target{display:flex;gap:8px;align-items:center;font-weight:600;min-width:0;overflow-wrap:anywhere}
 .cdhead .time{font-variant-numeric:tabular-nums}
 .cdhead .meta{color:var(--muted);font-size:12px}
 .cdhead .spacer{flex:1}
 .cdhead input{flex:0 1 240px;min-width:0;padding:5px 9px;border:1px solid var(--line);border-radius:7px;background:transparent}
-.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:6px}
+.cgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));grid-auto-rows:1fr;gap:6px}
 .ccell{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 8px;
   border:1px solid var(--line);border-radius:6px;min-width:0}
-.ccell .txt{min-width:0;font-size:12px;line-height:1.45}
+/* room for the name plus two count lines, so every cell matches an active/pending one */
+.ccell .txt{min-width:0;font-size:12px;line-height:1.45;min-height:calc(13px * 1.45 + 2 * 12px * 1.45)}
 .ccell .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ccell .ln{color:var(--muted);font-variant-numeric:tabular-nums}
 .ccell .ln.act{color:var(--ok);font-weight:600}
@@ -96,6 +103,9 @@ button:disabled{opacity:.45;cursor:default}
 .label{overflow-wrap:anywhere}
 .reg{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .tag{font-size:11px;padding:0 6px;border-radius:4px;background:var(--soft);color:var(--muted);margin-left:6px}
+/* Fixed-height results box: searching never changes the page height, so the
+   inventory does not jump down the page when the result list gets shorter. */
+.invbox{height:var(--pane-h);overflow-y:auto;scrollbar-gutter:stable;padding-right:4px}
 .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;color:var(--muted)}
 .empty{color:var(--muted);padding:12px 0}
 .ic{width:32px;height:32px;flex:none;image-rendering:pixelated;vertical-align:middle}
@@ -156,8 +166,10 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
           <input id="cdQ" type="search" placeholder="搜索 CPU 内物品（支持拼音）">
           <button type="button" class="small danger" id="cdCancel" hidden>取消任务</button>
         </div>
-        <div id="cdGrid" class="cgrid"></div>
-        <div id="cdEmpty" class="empty">选择左侧的 CPU 查看详情</div>
+        <div id="cdScroll" class="cdscroll">
+          <div id="cdGrid" class="cgrid"></div>
+          <div id="cdEmpty" class="empty">选择左侧的 CPU 查看详情</div>
+        </div>
       </div>
     </div>
   </section>
@@ -179,8 +191,10 @@ dialog input,dialog select{width:100%;padding:7px 10px;border:1px solid var(--li
       </select>
       <button id="viewToggle" type="button"></button>
     </div>
-    <div id="rows" class="grid"></div>
-    <div id="itemsEmpty" class="empty" hidden>没有匹配的条目</div>
+    <div id="invBox" class="invbox">
+      <div id="rows" class="grid"></div>
+      <div id="itemsEmpty" class="empty" hidden>没有匹配的条目</div>
+    </div>
     <div class="pager">
       <span id="pageInfo"></span>
       <button id="prev">上一页</button><button id="next">下一页</button>
@@ -388,10 +402,14 @@ $("cpuList").addEventListener("click", ev => {
   try { localStorage.setItem(CPU_KEY, String(selectedCpu)); } catch {}
   $("cdQ").value = "";
   $("cdGrid").innerHTML = "";
+  $("cdScroll").scrollTop = 0;
   renderCpuList(lastState?.status?.cpus);
   loadCpuDetail();
 });
-$("cdQ").addEventListener("input", () => { clearTimeout(cpuDetailTimer); cpuDetailTimer = setTimeout(loadCpuDetail, 250); });
+$("cdQ").addEventListener("input", () => {
+  clearTimeout(cpuDetailTimer);
+  cpuDetailTimer = setTimeout(() => { $("cdScroll").scrollTop = 0; loadCpuDetail(); }, 250);
+});
 $("cdCancel").addEventListener("click", async () => {
   const b = $("cdCancel");
   if (!confirm(`确定要取消「${b.dataset.label}」上正在进行的合成任务吗？`)) return;
@@ -480,6 +498,7 @@ function computePageSize() {
 
 $("viewToggle").addEventListener("click", () => {
   compact = !compact;
+  resetInvScroll = true;
   try { localStorage.setItem(VIEW_KEY, compact ? "compact" : "cards"); } catch {}
   applyView();
   loadItems();
@@ -492,6 +511,7 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => { if (computePageSize() !== pageSize) loadItems(); }, 200);
 });
 
+let resetInvScroll = false;
 async function loadItems() {
   const [sort, order] = $("sort").value.split(":");
   pageSize = computePageSize();
@@ -503,6 +523,7 @@ async function loadItems() {
   currentRows = data.rows;
   $("rows").innerHTML = data.rows.map(compact ? slotHtml : cardHtml).join("");
   $("itemsEmpty").hidden = data.rows.length > 0;
+  if (resetInvScroll) { $("invBox").scrollTop = 0; resetInvScroll = false; }
   const pages = Math.max(1, Math.ceil(total / pageSize));
   $("pageInfo").textContent = `第 ${Math.floor(offset / pageSize) + 1} / ${pages} 页 · 每页 ${pageSize} 个 · 共 ${full.format(total)} 条`;
   $("prev").disabled = offset === 0;
@@ -628,12 +649,55 @@ $("orders").addEventListener("click", async (ev) => {
   catch (e) { alert(e.message); b.disabled = false; }
 });
 
-function requery() { offset = 0; clearTimeout(itemsTimer); itemsTimer = setTimeout(loadItems, 250); }
+// The wheel should scroll whatever is under the cursor right now. Browsers latch a wheel
+// gesture to the element it started on, so a page scroll kept scrolling the page after a
+// scroll box moved under the cursor. Only that latched case is taken over: wheel events
+// that already target the box keep the browser's own (smooth) scrolling. When the box is
+// at its top/bottom the event is left alone and the page scrolls.
+const SCROLL_BOXES = ["invBox", "cpuList", "cdScroll"];
+const wheelAnim = new Map(); // box -> { target, frame }
+function animateBox(box) {
+  const st = wheelAnim.get(box);
+  if (!st || st.target === null) { wheelAnim.delete(box); return; } // native scrolling took over
+  const diff = st.target - box.scrollTop;
+  if (Math.abs(diff) < 1) { box.scrollTop = st.target; wheelAnim.delete(box); return; }
+  const before = box.scrollTop;
+  box.scrollTop += diff * 0.25; // ease out over a few frames
+  if (box.scrollTop === before) { wheelAnim.delete(box); return; } // hit an edge
+  st.frame = requestAnimationFrame(() => animateBox(box));
+}
+window.addEventListener("wheel", (ev) => {
+  if (ev.ctrlKey || ev.defaultPrevented || document.querySelector("dialog[open]")) return;
+  for (const id of SCROLL_BOXES) {
+    const box = $(id);
+    if (box.contains(ev.target)) { const st = wheelAnim.get(box); if (st) st.target = null; return; }
+    const r = box.getBoundingClientRect();
+    if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) continue;
+    const dy = ev.deltaY * (ev.deltaMode === 1 ? 16 : ev.deltaMode === 2 ? box.clientHeight : 1);
+    const max = box.scrollHeight - box.clientHeight;
+    if (!dy || max < 1) return;
+    const st = wheelAnim.get(box);
+    const from = st?.target ?? box.scrollTop;
+    if ((dy > 0 && from >= max - 1) || (dy < 0 && from <= 1)) return;
+    ev.preventDefault();
+    const target = Math.max(0, Math.min(max, from + dy));
+    if (st) st.target = target;
+    else { wheelAnim.set(box, {target, frame: 0}); requestAnimationFrame(() => animateBox(box)); }
+    return;
+  }
+}, {passive: false});
+
+// User-driven reloads (search, filters, paging, view) show the new list from its top;
+// the periodic refresh keeps the scroll position inside the results box.
+function requery() {
+  offset = 0; resetInvScroll = true;
+  clearTimeout(itemsTimer); itemsTimer = setTimeout(loadItems, 250);
+}
 $("q").addEventListener("input", requery);
 $("kind").addEventListener("change", requery);
 $("sort").addEventListener("change", requery);
-$("prev").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); loadItems(); });
-$("next").addEventListener("click", () => { offset += pageSize; loadItems(); });
+$("prev").addEventListener("click", () => { offset = Math.max(0, offset - pageSize); resetInvScroll = true; loadItems(); });
+$("next").addEventListener("click", () => { offset += pageSize; resetInvScroll = true; loadItems(); });
 
 refreshState();
 loadItems();
