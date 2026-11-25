@@ -1,4 +1,4 @@
-# Copy this file to config.toml and change every value.
+# Copy this file to config.toml. The defaults work as they are; change what you need.
 
 # Address the backend listens on. Keep 127.0.0.1 when a tunnel
 # (cloudflared / frp) runs on the same machine; use 0.0.0.0 only when

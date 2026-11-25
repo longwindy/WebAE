@@ -188,6 +188,7 @@ edit /home/aeweb.cfg
 | `CPU_FINAL_REFRESH` | 60 | 忙碌 CPU 的合成目标多久重新读取一次（秒） |
 | `HTTP_TIMEOUT` | 20 | 单次请求超时（秒） |
 | `MAX_ITEM_ID` / `ID_BATCH` | 32767 / 512 | 库存扫描的物品 ID 上限 / 每批读取的 ID 数 |
+| `NBT_LIMIT` | 1024 | 上报物品 NBT 的大小上限（字节，压缩后），用来识别改过名的物品；0 为关闭 |
 
 **合成 CPU 详情的刷新方式**：OC 每调用一次 AE 接口，都要等1 tick。每轮上报都会读一次 CPU 列表，然后最多花 `CPU_CALL_BUDGET` 次调用，按"最久没刷新的优先"刷新忙碌 CPU 的详情（现存、正在合成、计划合成，每个 CPU 3 次调用）。
 

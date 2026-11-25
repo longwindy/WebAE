@@ -24,6 +24,7 @@ local DEFAULTS = {
   HTTP_TIMEOUT = 20,
   MAX_ITEM_ID = 32767,
   ID_BATCH = 512,
+  NBT_LIMIT = 1024,
 }
 
 local TEMPLATE = [[
@@ -44,6 +45,7 @@ TOKEN = "CHANGE-ME-oc-token"
 -- HTTP_TIMEOUT = 20      -- seconds
 -- MAX_ITEM_ID = 32767    -- highest numeric item ID scanned
 -- ID_BATCH = 512         -- item IDs read per call (split automatically if too big)
+-- NBT_LIMIT = 1024       -- largest compressed item NBT (bytes) sent, to spot renamed items; 0 = off
 ]]
 
 -- Returns the settings table, or nil and a message for the user.
@@ -98,6 +100,7 @@ local CPU_FINAL_REFRESH = settings.CPU_FINAL_REFRESH
 local HTTP_TIMEOUT = settings.HTTP_TIMEOUT
 local MAX_ITEM_ID = settings.MAX_ITEM_ID
 local ID_BATCH = settings.ID_BATCH
+local NBT_LIMIT = settings.NBT_LIMIT
 
 ------------------------------------------------------------------ components
 
@@ -506,6 +509,39 @@ loadHandled()
 
 ------------------------------------------------------------------ inventory
 
+-- Base64 without bit operators, so it runs on both Lua 5.2 and 5.3 machines.
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function base64(s)
+  local out = {}
+  for i = 1, #s, 3 do
+    local a, b, c = s:byte(i, i + 2)
+    local n = a * 65536 + (b or 0) * 256 + (c or 0)
+    local q1, q2 = math.floor(n / 262144) % 64, math.floor(n / 4096) % 64
+    local q3, q4 = math.floor(n / 64) % 64, n % 64
+    out[#out + 1] = B64:sub(q1 + 1, q1 + 1) .. B64:sub(q2 + 1, q2 + 1)
+      .. (b and B64:sub(q3 + 1, q3 + 1) or "=") .. (c and B64:sub(q4 + 1, q4 + 1) or "=")
+  end
+  return table.concat(out)
+end
+
+-- OC only hands out an item's NBT (GZIP'ed, in `tag`) when allowItemStackNBTTags is on
+-- in OpenComputers.cfg (GTNH's default). The backend reads display.Name from it, which
+-- is how a renamed item is told apart; big tags (storage cells, filled bags) are skipped.
+local nbtWarned = false
+local function nbtField(it)
+  if NBT_LIMIT <= 0 or not it.hasTag then return "" end
+  local tag = it.tag
+  if type(tag) ~= "string" then
+    if not nbtWarned then
+      nbtWarned = true
+      log("item NBT not available (allowItemStackNBTTags is off in OpenComputers.cfg): renamed items show their normal name")
+    end
+    return ""
+  end
+  if #tag > NBT_LIMIT then return "" end
+  return base64(tag)
+end
+
 local function sendItems()
   local started = computer.uptime()
   local snap = string.format("%d-%d", math.floor(started * 1000), math.random(1, 1e9))
@@ -557,7 +593,7 @@ local function sendItems()
     for i = 1, #list do
       local it = list[i]
       add(table.concat({ "i", clean(it.name), num(it.damage), num(it.size),
-        it.isCraftable and "1" or "0", clean(it.label) }, "\t"))
+        it.isCraftable and "1" or "0", clean(it.label), nbtField(it) }, "\t"))
       list[i] = nil
     end
   end

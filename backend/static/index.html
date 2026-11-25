@@ -476,8 +476,13 @@ const VIEW_KEY = "aeweb.view";
 let compact = false;
 try { compact = localStorage.getItem(VIEW_KEY) === "compact"; } catch {}
 
+// A renamed item (anvil) shows its new name in italics, like in game; the tooltip and
+// the order dialog still give the item's own name.
+const shownName = r => r.rn ? r.l : (r.z || r.l);
+const nameHtml = r => r.rn ? `<i>${esc(r.l)}</i>` : esc(r.z || r.l);
+
 function itemTitle(r) {
-  return [r.z || r.l, r.z ? r.l : null, `${r.n}${r.k === "i" ? ":" + r.d : ""}`,
+  return [shownName(r), r.rn ? r.z : r.z ? r.l : null, `${r.n}${r.k === "i" ? ":" + r.d : ""}`,
     `数量：${exact(r.s)}${r.k === "f" ? " L" : ""}`,
     r.c ? (canOrder() ? "点击下单合成" : "可合成（你在这个网络里只能查看）") : null]
     .filter(Boolean).map(s => esc(s)).join("&#10;");
@@ -491,7 +496,7 @@ function cardHtml(r, i) {
   const badge = r.c ? '<span class="tag can">可合成</span>' : r.k === "f" ? '<span class="tag">流体</span>' : "";
   return `<div class="card${clickable(r) ? " craftable" : ""}" data-i="${i}" title="${itemTitle(r)}">
     <div class="pic">${icon(r.ic)}</div>
-    <div class="body"><div class="nm">${esc(r.z || r.l)}</div>
+    <div class="body"><div class="nm">${nameHtml(r)}</div>
       <div class="foot"><span class="cnt">${countText(r)}</span>${badge}</div></div>
   </div>`;
 }
@@ -616,8 +621,10 @@ const unit = row => isFluid(row) ? " L" : "";
 function openOrder(row) {
   orderItem = row;
   $("odIcon").innerHTML = icon(row.ic);
-  $("odName").textContent = (row.z || row.l).replace(/§./g, "");
-  $("odReg").textContent = `${row.z ? row.l.replace(/§./g, "") + " · " : ""}${row.n}${isFluid(row) ? "（流体）" : ":" + row.d}`;
+  $("odName").textContent = shownName(row).replace(/§./g, "");
+  $("odName").style.fontStyle = row.rn ? "italic" : "";
+  const other = row.rn ? row.z : row.z ? row.l.replace(/§./g, "") : null;
+  $("odReg").textContent = `${other ? other + " · " : ""}${row.n}${isFluid(row) ? "（流体）" : ":" + row.d}`;
   $("odStock").textContent = full.format(row.s) + unit(row);
   $("odAmountLabel").textContent = isFluid(row) ? "数量（L）" : "数量";
   $("odAmount").value = isFluid(row) ? 1000 : 1;

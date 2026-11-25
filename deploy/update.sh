@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs on the server: pull the latest pushed commit and restart the backend only when needed.
-# deploy.ps1 copies this file to /tmp and runs it there with sudo, so a pull that changes
-# this script never edits it while it is running. It can also be run by hand:
-#   sudo bash /opt/webae/deploy/update.sh
+# It runs from a copy in /tmp, so a pull that changes this script never edits it while it
+# is running. deploy.ps1 does that for you; by hand (as root):
+#   cp /opt/webae/deploy/update.sh /tmp/webae-update.sh && bash /tmp/webae-update.sh
 set -euo pipefail
 
 APP=/opt/webae

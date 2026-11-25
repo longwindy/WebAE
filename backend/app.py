@@ -13,12 +13,15 @@ NEI item panel dumps placed in <data_dir>/i18n (see Translations).
 """
 
 import asyncio
+import base64
 import csv
 import hashlib
 import json
 import re
 import secrets
+import struct
 import time
+import zlib
 from pathlib import Path
 
 import pypinyin
@@ -321,7 +324,10 @@ def index_rows(rows: list[dict]) -> None:
         row["_zh"] = zh
         row["_ic"] = ICONS.lookup(row["k"], row["n"], row["d"], row["l"], zh)
         row["_key"] = "\0".join((row["n"], row["l"], zh or "")).lower()
-        row["_py"] = pinyin_index(zh) if zh else None
+        # A renamed item can also be found by the pinyin of its new name. "\0" has no
+        # reading, so a match never runs across the two names.
+        spoken = "\0".join(filter(None, (zh, row["l"] if row.get("rn") else None)))
+        row["_py"] = pinyin_index(spoken) if spoken else None
 
 
 class State:
@@ -667,15 +673,89 @@ async def oc_status(request: Request):
     return PlainTextResponse("".join(line + "\n" for line in lines))
 
 
+NBT_MAX_BYTES = 64 * 1024  # decompressed; the OC side only sends small tags anyway
+
+
+def nbt_has_custom_name(tag_b64: str) -> bool:
+    """True when the GZIP'ed item NBT (from OC's `tag` field) has display.Name,
+    which is what an anvil rename writes."""
+    try:
+        packed = base64.b64decode(tag_b64, validate=True)
+        inflater = zlib.decompressobj(wbits=31)  # gzip container
+        data = inflater.decompress(packed, NBT_MAX_BYTES)
+        if inflater.unconsumed_tail:
+            return False
+        return _nbt_display_name(data)
+    except (ValueError, zlib.error, IndexError, struct.error, RecursionError):
+        return False
+
+
+def _nbt_display_name(data: bytes) -> bool:
+    pos = 0
+
+    def take(n: int) -> bytes:
+        nonlocal pos
+        if n < 0 or pos + n > len(data):
+            raise ValueError("truncated NBT")
+        chunk = data[pos:pos + n]
+        pos += n
+        return chunk
+
+    def name() -> str:
+        return take(struct.unpack(">H", take(2))[0]).decode("utf-8", errors="replace")
+
+    sizes = {1: 1, 2: 2, 3: 4, 4: 8, 5: 4, 6: 8}
+
+    def skip(kind: int) -> None:
+        if kind in sizes:
+            take(sizes[kind])
+        elif kind == 7:  # byte array
+            take(struct.unpack(">i", take(4))[0])
+        elif kind == 8:  # string
+            take(struct.unpack(">H", take(2))[0])
+        elif kind == 9:  # list
+            inner, count = take(1)[0], struct.unpack(">i", take(4))[0]
+            for _ in range(count):
+                skip(inner)
+        elif kind == 10:  # compound
+            while (child := take(1)[0]) != 0:
+                name()
+                skip(child)
+        elif kind == 11:  # int array
+            take(4 * struct.unpack(">i", take(4))[0])
+        else:
+            raise ValueError(f"unknown NBT tag {kind}")
+
+    def compound_has(path: list[str]) -> bool:
+        """Reads a compound's payload; True when it holds path (compounds, then a string)."""
+        found = False
+        while (kind := take(1)[0]) != 0:
+            key = name()
+            if key == path[0] and len(path) == 1 and kind == 8:
+                skip(kind)
+                found = True
+            elif key == path[0] and len(path) > 1 and kind == 10:
+                found = compound_has(path[1:]) or found
+            else:
+                skip(kind)
+        return found
+
+    if take(1)[0] != 10:
+        return False
+    name()
+    return compound_has(["display", "Name"])
+
+
 def parse_rows(text: str) -> list[dict]:
     rows = []
     for line in text.split("\n"):
         if not line:
             continue
-        parts = line.split("\t", 5)
-        if len(parts) != 6 or parts[0] not in ("i", "f"):
+        # The 7th field (newer OC scripts) is the item's base64 GZIP'ed NBT, or empty.
+        parts = line.split("\t", 6)
+        if len(parts) not in (6, 7) or parts[0] not in ("i", "f"):
             raise HTTPException(400, f"bad line: {line[:80]!r}")
-        kind, name, damage, size, craftable, label = parts
+        kind, name, damage, size, craftable, label = parts[:6]
         try:
             row = {
                 "k": kind,
@@ -687,6 +767,8 @@ def parse_rows(text: str) -> list[dict]:
             }
         except ValueError:
             raise HTTPException(400, f"bad number: {line[:80]!r}")
+        if len(parts) == 7 and parts[6] and nbt_has_custom_name(parts[6]):
+            row["rn"] = True  # renamed (anvil): show the label instead of the translation
         rows.append(row)
     return rows
 
@@ -961,7 +1043,7 @@ async def api_items(request: Request, net: str, q: str = "", kind: str = "all", 
     if terms:
         rows = [r for r in rows if all(term_matches(t, r) for t in terms)]
     if sort == "name":
-        rows = sorted(rows, key=lambda r: (r["_zh"] or r["l"]).lower(), reverse=(order == "desc"))
+        rows = sorted(rows, key=lambda r: (r["l"] if r.get("rn") else r["_zh"] or r["l"]).lower(), reverse=(order == "desc"))
     else:
         rows = sorted(rows, key=lambda r: r["s"], reverse=(order != "asc"))
     limit = max(1, min(limit, 500))
