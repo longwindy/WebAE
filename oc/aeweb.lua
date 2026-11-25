@@ -230,10 +230,45 @@ end
 
 ------------------------------------------------------------------ status
 
+-- Base64 without bit operators, so it runs on both Lua 5.2 and 5.3 machines.
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function base64(s)
+  local out = {}
+  for i = 1, #s, 3 do
+    local a, b, c = s:byte(i, i + 2)
+    local n = a * 65536 + (b or 0) * 256 + (c or 0)
+    local q1, q2 = math.floor(n / 262144) % 64, math.floor(n / 4096) % 64
+    local q3, q4 = math.floor(n / 64) % 64, n % 64
+    out[#out + 1] = B64:sub(q1 + 1, q1 + 1) .. B64:sub(q2 + 1, q2 + 1)
+      .. (b and B64:sub(q3 + 1, q3 + 1) or "=") .. (c and B64:sub(q4 + 1, q4 + 1) or "=")
+  end
+  return table.concat(out)
+end
+
+-- OC only hands out an item's NBT (GZIP'ed, in `tag`) when allowItemStackNBTTags is on
+-- in OpenComputers.cfg (GTNH's default). The backend reads display.Name from it, which
+-- is how a renamed item is told apart, in the inventory and in CPUs. Big tags (storage
+-- cells, filled bags) are skipped.
+local nbtWarned = false
+local function nbtField(it)
+  if NBT_LIMIT <= 0 or not it.hasTag then return "" end
+  local tag = it.tag
+  if type(tag) ~= "string" then
+    if not nbtWarned then
+      nbtWarned = true
+      log("item NBT not available (allowItemStackNBTTags is off in OpenComputers.cfg): renamed items show their normal name")
+    end
+    return ""
+  end
+  if #tag > NBT_LIMIT then return "" end
+  return base64(tag)
+end
+
 local function shortItem(it)
   if type(it) ~= "table" then return nil end
+  local tag = nbtField(it)
   return { n = it.name or "?", d = it.damage or 0, l = it.label or it.name or "?",
-           s = it.size or it.amount or 0 }
+           s = it.size or it.amount or 0, t = tag ~= "" and tag or nil }
 end
 
 local function itemList(fn)
@@ -508,39 +543,6 @@ end
 loadHandled()
 
 ------------------------------------------------------------------ inventory
-
--- Base64 without bit operators, so it runs on both Lua 5.2 and 5.3 machines.
-local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local function base64(s)
-  local out = {}
-  for i = 1, #s, 3 do
-    local a, b, c = s:byte(i, i + 2)
-    local n = a * 65536 + (b or 0) * 256 + (c or 0)
-    local q1, q2 = math.floor(n / 262144) % 64, math.floor(n / 4096) % 64
-    local q3, q4 = math.floor(n / 64) % 64, n % 64
-    out[#out + 1] = B64:sub(q1 + 1, q1 + 1) .. B64:sub(q2 + 1, q2 + 1)
-      .. (b and B64:sub(q3 + 1, q3 + 1) or "=") .. (c and B64:sub(q4 + 1, q4 + 1) or "=")
-  end
-  return table.concat(out)
-end
-
--- OC only hands out an item's NBT (GZIP'ed, in `tag`) when allowItemStackNBTTags is on
--- in OpenComputers.cfg (GTNH's default). The backend reads display.Name from it, which
--- is how a renamed item is told apart; big tags (storage cells, filled bags) are skipped.
-local nbtWarned = false
-local function nbtField(it)
-  if NBT_LIMIT <= 0 or not it.hasTag then return "" end
-  local tag = it.tag
-  if type(tag) ~= "string" then
-    if not nbtWarned then
-      nbtWarned = true
-      log("item NBT not available (allowItemStackNBTTags is off in OpenComputers.cfg): renamed items show their normal name")
-    end
-    return ""
-  end
-  if #tag > NBT_LIMIT then return "" end
-  return base64(tag)
-end
 
 local function sendItems()
   local started = computer.uptime()

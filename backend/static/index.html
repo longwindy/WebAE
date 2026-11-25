@@ -361,7 +361,7 @@ setInterval(tickClocks, 1000);
 
 function targetHtml(c) {
   if (!c.busy) return "空闲";
-  if (c.final) return `${icon(c.final.ic)}<span title="${esc(c.final.l)}">${esc(c.final.z || c.final.l)}</span>`
+  if (c.final) return `${icon(c.final.ic)}<span title="${esc(otherName(c.final) || "")}">${nameHtml(c.final)}</span>`
     + `<span title="${exact(c.final.s)}">× ${num(c.final.s)}</span>`;
   return /No crafting monitor/.test(c.finalError || "")
     ? '<span class="meta">目标未知（CPU 里没有合成监控器）</span>' : '<span class="meta">目标未知</span>';
@@ -383,11 +383,11 @@ function renderCpuList(cpus) {
 }
 
 function cellHtml(r) {
-  const tip = [r.z || r.l, r.z ? r.l : null, `${r.n}:${r.d}`,
+  const tip = [shownName(r), otherName(r), `${r.n}:${r.d}`,
     r.s ? `现存：${exact(r.s)}` : null, r.a ? `正在合成：${exact(r.a)}` : null, r.p ? `计划合成：${exact(r.p)}` : null]
     .filter(Boolean).map(s => esc(s)).join("&#10;");
   return `<div class="ccell${r.a > 0 ? " active" : r.p > 0 ? " pending" : ""}" title="${tip}">
-    <div class="txt"><div class="nm">${esc(r.z || r.l)}</div>
+    <div class="txt"><div class="nm">${nameHtml(r)}</div>
       ${r.s ? `<div class="ln">现存 ${num(r.s)}</div>` : ""}${r.a ? `<div class="ln act">正在合成 ${num(r.a)}</div>` : ""}
       ${r.p ? `<div class="ln">计划合成 ${num(r.p)}</div>` : ""}</div>${icon(r.ic)}</div>`;
 }
@@ -478,11 +478,13 @@ try { compact = localStorage.getItem(VIEW_KEY) === "compact"; } catch {}
 
 // A renamed item (anvil) shows its new name in italics, like in game; the tooltip and
 // the order dialog still give the item's own name.
+// Inventory, orders, CPU targets and CPU contents all name items this way.
 const shownName = r => r.rn ? r.l : (r.z || r.l);
+const otherName = r => r.rn ? r.z : r.z ? r.l : null;
 const nameHtml = r => r.rn ? `<i>${esc(r.l)}</i>` : esc(r.z || r.l);
 
 function itemTitle(r) {
-  return [shownName(r), r.rn ? r.z : r.z ? r.l : null, `${r.n}${r.k === "i" ? ":" + r.d : ""}`,
+  return [shownName(r), otherName(r), `${r.n}${r.k === "i" ? ":" + r.d : ""}`,
     `数量：${exact(r.s)}${r.k === "f" ? " L" : ""}`,
     r.c ? (canOrder() ? "点击下单合成" : "可合成（你在这个网络里只能查看）") : null]
     .filter(Boolean).map(s => esc(s)).join("&#10;");
@@ -602,7 +604,7 @@ function renderOrders(orders, now) {
     const foot = orderFooter(o);
     return `<div class="ocard ${edge}">
       ${icon(o.ic)}
-      <span class="name" title="${esc(o.l)}">${esc(o.z || o.l)}</span>
+      <span class="name" title="${esc(otherName(o) || "")}">${nameHtml(o)}</span>
       <span class="pill ${pill}">${label}</span>
       <span class="amt">× ${full.format(o.amount)}${o.k === "f" ? " L" : ""}${o.cpu ? ` <span class="tag">${esc(o.cpu)}</span>` : ""}</span>
       ${o.state === "queued" && (isOwner() || (canOrder() && o.user === me?.user))

@@ -323,11 +323,19 @@ def index_rows(rows: list[dict]) -> None:
         zh = TR.lookup(row["k"], row["n"], row["d"], row["l"])
         row["_zh"] = zh
         row["_ic"] = ICONS.lookup(row["k"], row["n"], row["d"], row["l"], zh)
-        row["_key"] = "\0".join((row["n"], row["l"], zh or "")).lower()
-        # A renamed item can also be found by the pinyin of its new name. "\0" has no
-        # reading, so a match never runs across the two names.
-        spoken = "\0".join(filter(None, (zh, row["l"] if row.get("rn") else None)))
-        row["_py"] = pinyin_index(spoken) if spoken else None
+        add_search_keys(row, zh)
+
+
+def add_search_keys(row: dict, zh: str | None) -> None:
+    row["_key"] = "\0".join((row["n"], row["l"], zh or "")).lower()
+    # A renamed item can also be found by the pinyin of its new name. "\0" has no
+    # reading, so a match never runs across the two names.
+    spoken = "\0".join(filter(None, (zh, row["l"] if row.get("rn") else None)))
+    row["_py"] = pinyin_index(spoken) if spoken else None
+
+
+def shown_name(row: dict, zh: str | None) -> str:
+    return (row["l"] if row.get("rn") else zh or row["l"]).lower()
 
 
 class State:
@@ -666,6 +674,7 @@ async def oc_status(request: Request):
         raise HTTPException(400, "expected object")
     net.commands.apply_report(data.pop("updates", []), data.pop("tracking", []))
     data["received"] = time.time()
+    mark_cpu_renames(data.get("cpus"))
     net.cpus.update(data.get("cpus"), data["received"])  # moves CPU details into the tracker
     net.state.status = data
     # Pending commands ride back on the response, one per line.
@@ -744,6 +753,26 @@ def _nbt_display_name(data: bytes) -> bool:
         return False
     name()
     return compound_has(["display", "Name"])
+
+
+def mark_renamed(item) -> None:
+    """Replaces a CPU item's NBT ("t", newer OC scripts) with the rn flag."""
+    if isinstance(item, dict):
+        tag = item.pop("t", None)
+        if isinstance(tag, str) and tag and nbt_has_custom_name(tag):
+            item["rn"] = True
+
+
+def mark_cpu_renames(cpus) -> None:
+    for cpu in cpus if isinstance(cpus, list) else []:
+        if not isinstance(cpu, dict):
+            continue
+        mark_renamed(cpu.get("final"))
+        detail = cpu.get("detail")
+        if isinstance(detail, dict):
+            for field in ("stored", "active", "pending"):
+                for it in detail.get(field) or []:
+                    mark_renamed(it)
 
 
 def parse_rows(text: str) -> list[dict]:
@@ -907,13 +936,14 @@ def cpu_rows(detail: dict) -> list[dict]:
             key = (it.get("n", ""), it.get("d", 0), it.get("l", ""))
             row = rows.setdefault(key, {"n": key[0], "d": key[1], "l": key[2], "s": 0, "a": 0, "p": 0})
             row[short] += it.get("s", 0)
+            if it.get("rn"):
+                row["rn"] = True
     out = []
     for row in rows.values():
         row = translate_item(row)
-        row["_key"] = "\0".join((row["n"], row["l"], row["z"] or "")).lower()
-        row["_py"] = pinyin_index(row["z"]) if row["z"] else None
+        add_search_keys(row, row["z"])
         out.append(row)
-    out.sort(key=lambda r: (-(r["a"] > 0), -(r["p"] > 0), (r["z"] or r["l"]).lower()))
+    out.sort(key=lambda r: (-(r["a"] > 0), -(r["p"] > 0), shown_name(r, r["z"])))
     return out
 
 
@@ -997,7 +1027,8 @@ async def create_order(request: Request, net: str, order: OrderRequest):
     if order.cpu and not any(c.get("rawName") == order.cpu for c in cpus):
         raise HTTPException(400, "找不到这个合成 CPU")
     cmd = acc.net.commands.add(type="craft", k=order.k, n=order.n, d=order.d, l=order.l,
-                               amount=order.amount, cpu=order.cpu, user=acc.user)
+                               amount=order.amount, cpu=order.cpu, user=acc.user,
+                               **({"rn": True} if item.get("rn") else {}))
     return {"ok": True, "id": cmd["id"]}
 
 
@@ -1043,7 +1074,7 @@ async def api_items(request: Request, net: str, q: str = "", kind: str = "all", 
     if terms:
         rows = [r for r in rows if all(term_matches(t, r) for t in terms)]
     if sort == "name":
-        rows = sorted(rows, key=lambda r: (r["l"] if r.get("rn") else r["_zh"] or r["l"]).lower(), reverse=(order == "desc"))
+        rows = sorted(rows, key=lambda r: shown_name(r, r["_zh"]), reverse=(order == "desc"))
     else:
         rows = sorted(rows, key=lambda r: r["s"], reverse=(order != "asc"))
     limit = max(1, min(limit, 500))
